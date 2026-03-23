@@ -41,7 +41,7 @@ async function saveMessage(chatId, userId, displayName, text, lang) {
   }
 }
 
-async function getRecentMessages(chatId, limit = 10) {
+async function getRecentMessages(chatId, limit = 30) {
   if (!SUPABASE_URL || !SUPABASE_KEY) return [];
   try {
     const res = await fetch(
@@ -53,6 +53,40 @@ async function getRecentMessages(chatId, limit = 10) {
   } catch (e) {
     console.error('Supabase fetch error:', e.message);
     return [];
+  }
+}
+
+async function getRelationshipProfile(chatId) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return null;
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/brucebot_profile?id=eq.${encodeURIComponent(chatId)}`,
+      { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` } }
+    );
+    const rows = await res.json();
+    return Array.isArray(rows) && rows.length > 0 ? rows[0].data : null;
+  } catch (e) {
+    console.error('Profile fetch error:', e.message);
+    return null;
+  }
+}
+
+async function updateRelationshipProfile(chatId, newInsights) {
+  if (!SUPABASE_URL || !SUPABASE_KEY || !newInsights) return;
+  try {
+    // Upsert the profile
+    await fetch(`${SUPABASE_URL}/rest/v1/brucebot_profile`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Prefer': 'resolution=merge-duplicates',
+      },
+      body: JSON.stringify({ id: chatId, data: newInsights, updated_at: new Date().toISOString() }),
+    });
+  } catch (e) {
+    console.error('Profile update error:', e.message);
   }
 }
 
@@ -161,22 +195,27 @@ async function handleEvent(event) {
     return null;
   }
 
-  // Get sender name + recent history in parallel
-  const [displayName, history] = await Promise.all([
+  // Get sender name + recent history + relationship profile in parallel
+  const [displayName, history, profile] = await Promise.all([
     getDisplayName(userId, chatId, chatType),
-    getRecentMessages(chatId, 10),
+    getRecentMessages(chatId, 30),
+    getRelationshipProfile(chatId),
   ]);
 
   // Save this message
   saveMessage(chatId, userId, displayName, text, lang);
 
-  // Build context string from history
+  // Build context from history
   let contextBlock = '';
   if (history.length > 0) {
-    const historyLines = history
-      .map(m => `${m.display_name}: ${m.text}`)
-      .join('\n');
-    contextBlock = `\n\nRecent conversation history (for context only, do not translate these):\n${historyLines}`;
+    const historyLines = history.map(m => `${m.display_name}: ${m.text}`).join('\n');
+    contextBlock = `\n\nRecent conversation (last ${history.length} messages):\n${historyLines}`;
+  }
+
+  // Add long-term relationship profile if available
+  let profileBlock = '';
+  if (profile && Object.keys(profile).length > 0) {
+    profileBlock = `\n\nLong-term relationship profile:\n${JSON.stringify(profile, null, 2)}`;
   }
 
   // Build chat history for @ai assistant mode (proper turn-by-turn)
@@ -193,14 +232,24 @@ async function handleEvent(event) {
   } else if (lang === 'en') {
     systemPrompt = `Translate English to natural conversational Thai for texting. Output only the Thai translation.${contextBlock}`;
   } else {
-    systemPrompt = `You are a helpful, fun assistant in a LINE group chat between a couple (Bruce speaks English, K speaks Thai). 
-Always reply in BOTH languages: first in English, then in Thai, separated by a line break.
-Format:
-[English reply]
+    systemPrompt = `You are a personal relationship assistant in a LINE group chat for a couple: Bruce (English) and K (Thai).
 
-🇹🇭 [Same reply in Thai]
+You have access to their conversation history and a long-term profile of their relationship.
+${profileBlock}
 
-Be concise, warm, and helpful.`;
+Your job:
+- Help them communicate, play games, understand each other, and grow together
+- Always reply in BOTH English and Thai so both can read it:
+  [English reply]
+  
+  🇹🇭 [Same reply in Thai]
+- Be warm, insightful, and fun
+- When you learn something meaningful about the couple (a preference, a milestone, a pattern), note it for the profile
+
+After your reply, if you learned something new about them worth remembering, append on a new line:
+PROFILE_UPDATE:{"key": "value"}
+
+Keep profile updates concise and factual.`;
   }
 
   try {
@@ -218,8 +267,23 @@ Be concise, warm, and helpful.`;
       finalReply = `${flag} ${displayName}:\n${replyText}`;
     }
 
-    // Save bot reply to memory (for @ai conversation continuity)
-    if (lang === 'cmd') saveBotReply(chatId, replyText);
+    // Save bot reply + extract profile updates
+    if (lang === 'cmd') {
+      // Check for profile update embedded in reply
+      const profileMatch = replyText.match(/PROFILE_UPDATE:(\{.*\})/s);
+      if (profileMatch) {
+        try {
+          const newInsights = JSON.parse(profileMatch[1]);
+          const existingProfile = profile || {};
+          updateRelationshipProfile(chatId, { ...existingProfile, ...newInsights });
+          // Strip the profile update from the visible reply
+          finalReply = finalReply.replace(/\nPROFILE_UPDATE:.*$/s, '').trim();
+        } catch (e) {
+          console.error('Profile parse error:', e.message);
+        }
+      }
+      saveBotReply(chatId, replyText.replace(/\nPROFILE_UPDATE:.*$/s, '').trim());
+    }
 
     return client.replyMessage({
       replyToken: event.replyToken,
