@@ -21,7 +21,7 @@ const SAFETY_SETTINGS = [
   { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
 ];
 
-const TRANSLATION_PROMPT = `You are an expert Thai-English translator who understands Thai culture, slang, and subtext.
+const THAI_TO_EN_PROMPT = `You are an expert Thai-English translator who understands Thai culture, slang, and subtext.
 
 When given Thai text, output TWO sections:
 
@@ -33,10 +33,24 @@ In 1-3 sentences, explain what this person is really communicating — the emoti
 
 Do not give advice. Just translate and explain the meaning.`;
 
+const EN_TO_THAI_PROMPT = `You are an expert English-Thai translator.
+
+Translate the given English text into natural, conversational Thai. Output TWO sections:
+
+**การแปล (Translation):**
+Translate every line into natural Thai. Use casual Thai appropriate for texting between a couple or friends.
+
+**Context:**
+In 1 sentence in English, note anything important about tone or phrasing the sender should know.
+
+Do not give advice. Just translate.`;
+
 const ASSISTANT_PROMPT = `You are a helpful assistant in a LINE group chat. Reply concisely. If Thai, reply in Thai. If English, reply in English.`;
 
 // Detect Thai characters
 const THAI_RE = /[\u0E00-\u0E7F]/;
+// Detect mostly-English text (letters, basic punctuation, no Thai)
+const ENGLISH_RE = /^[a-zA-Z0-9\s.,!?'"()\-:;]+$/;
 // Match @ai or @BruceBot trigger
 const TRIGGER_RE = /^@(?:ai|brucebot(?:\s+ai)?)\s*(.*)/is;
 
@@ -56,14 +70,19 @@ async function handleEvent(event) {
   const text = event.message.text.trim();
   const hasThai = THAI_RE.test(text);
   const triggerMatch = text.match(TRIGGER_RE);
+  const isEnglish = ENGLISH_RE.test(text) && text.length > 2;
 
   let userMessage;
   let systemPrompt;
 
   if (hasThai && !triggerMatch) {
-    // Auto-translate any Thai message
+    // Auto-translate Thai → English
     userMessage = text;
-    systemPrompt = TRANSLATION_PROMPT;
+    systemPrompt = THAI_TO_EN_PROMPT;
+  } else if (isEnglish && !triggerMatch) {
+    // Auto-translate English → Thai
+    userMessage = text;
+    systemPrompt = EN_TO_THAI_PROMPT;
   } else if (triggerMatch) {
     // @ai / @BruceBot — assistant mode
     userMessage = triggerMatch[1].trim() || 'hello';
