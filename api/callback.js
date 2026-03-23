@@ -62,7 +62,7 @@ async function saveMessage(chatId, userId, displayName, text, lang) {
   return sb('brucebot_messages', 'POST', { chat_id: chatId, user_id: userId, display_name: displayName, text, lang });
 }
 
-async function getRecentMessages(chatId, limit = 30) {
+async function getRecentMessages(chatId, limit = 100) {
   const rows = await sb(`brucebot_messages?chat_id=eq.${encodeURIComponent(chatId)}&order=created_at.desc&limit=${limit}`);
   return Array.isArray(rows) ? rows.reverse() : [];
 }
@@ -100,25 +100,33 @@ async function callGemini(systemPrompt, messages) {
 // ─── Profile updater — runs silently on every message ────────────────────────
 
 async function learnFromMessage(chatId, displayName, text, lang, currentProfile) {
-  const prompt = `You are silently observing a couple's LINE chat to build a relationship intelligence profile.
-A message was just sent. Extract any meaningful insights about the people or relationship.
+  const prompt = `You are a relationship intelligence system silently observing a couple's chat.
 
 Current profile:
 ${JSON.stringify(currentProfile, null, 2)}
 
-New message from ${displayName} (lang: ${lang}): "${text}"
+New message from ${displayName}: "${text}"
 
-If this message reveals something worth remembering (personality trait, preference, feeling, milestone, pattern, topic they care about), output a JSON object with the new/updated fields to merge into the profile.
+Extract ONLY genuinely meaningful insights — things that reveal personality, preferences, feelings, milestones, or relationship patterns. Skip small talk, filler, and bot commands.
 
-Profile structure to use:
+Things worth saving:
+- Emotional moments ("I miss you", "that made me happy", "I was surprised")
+- Preferences and dislikes ("I love Japanese food", "I hate when...")
+- Milestones ("our first date", "we went to Silom today")
+- Personality reveals (self-awareness, humor, sensitivity, directness)
+- Relationship dynamics (who initiates, how they express love, tension patterns)
+- Shared interests, inside jokes, recurring topics
+- Specific memories worth remembering
+
+Profile structure:
 {
-  "bruce": { "personality": [], "interests": [], "communication_style": "", "languages": ["English"], "notes": [] },
-  "k": { "personality": [], "interests": [], "communication_style": "", "languages": ["Thai"], "notes": [] },
-  "relationship": { "milestones": [], "patterns": [], "shared_interests": [], "recurring_topics": [], "dynamics": "", "started": "" },
-  "memories": []
+  "bruce": { "personality": [], "interests": [], "communication_style": "", "love_language": "", "notes": [] },
+  "k": { "personality": [], "interests": [], "communication_style": "", "love_language": "", "notes": [] },
+  "relationship": { "milestones": [], "patterns": [], "shared_interests": [], "recurring_topics": [], "dynamics": "", "started": "", "inside_jokes": [] },
+  "memories": [{ "date": "", "description": "" }]
 }
 
-Output ONLY valid JSON to merge, or output null if nothing meaningful to add. No explanation.`;
+Output ONLY valid JSON to merge, or exactly null if nothing meaningful. No explanation, no markdown.`;
 
   try {
     const result = await callGemini(prompt, [{ role: 'user', text: `Message: "${text}"` }]);
@@ -199,7 +207,7 @@ async function handleEvent(event) {
   }
 
   // Recent convo context for translations
-  const recentLines = history.slice(-10).map(m => `${m.display_name}: ${m.text}`).join('\n');
+  const recentLines = history.slice(-20).map(m => `${m.display_name}: ${m.text}`).join('\n');
 
   let systemPrompt, inputMessages;
 
