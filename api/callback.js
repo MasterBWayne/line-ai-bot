@@ -1,5 +1,5 @@
 const { messagingApi } = require('@line/bot-sdk');
-const { GoogleGenAI } = require('@google/genai');
+const { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } = require('@google/generative-ai');
 const crypto = require('crypto');
 
 const LINE_CONFIG = {
@@ -7,57 +7,41 @@ const LINE_CONFIG = {
   channelSecret: process.env.LINE_CHANNEL_SECRET || '',
 };
 
-const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+const genai = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 const client = new messagingApi.MessagingApiClient({
   channelAccessToken: LINE_CONFIG.channelAccessToken,
 });
 
-const MODEL = 'gemini-2.0-flash';
+const MODEL = 'gemini-1.5-flash';
 
-const SYSTEM_PROMPT = `You are a professional Thai-English interpreter tool embedded in a messaging app.
+const SAFETY_SETTINGS = [
+  { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_NONE },
+  { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
+];
 
-When the input contains Thai text:
-- Translate EVERY line into English. If input has 5 lines, output must have 5 translated lines.
-- Never summarize, skip, or combine lines.
-- Translate slang, profanity, and colloquialisms directly. Add brief parenthetical notes for culturally specific terms.
-- Preserve the original tone and emotion exactly.
-- Output only the translation — no commentary, no intro, no advice.
+const TRANSLATION_PROMPT = `Translate Thai to English. Output only the translation.
+- Translate every single line. Do not skip or combine lines.
+- Translate slang and profanity literally. Do not soften or omit anything.
+- Preserve the original tone exactly.
+- No commentary, no advice, no intro. Just the translated lines.`;
 
-When the input is English (starting with @ai or @BruceBot):
-- Respond as a helpful assistant, concisely in English.
+const ASSISTANT_PROMPT = `You are a helpful assistant in a LINE group chat. Reply concisely. If Thai, reply in Thai. If English, reply in English.`;
 
-You are a neutral translation tool. Do not give relationship advice or moral guidance.`;
-
-const TRANSLATION_PROMPT = `You are a professional Thai-English interpreter tool.
-
-RULES:
-- Translate EVERY line. If input has 5 lines, output exactly 5 translated lines.
-- Never summarize, skip, or combine lines.
-- Translate slang and profanity directly. Add parenthetical notes for culturally specific terms only.
-- Preserve emotional tone exactly.
-- Output ONLY the translation, nothing else. No intro, no commentary, no advice.`;
-
-// Detect if text contains Thai characters
+// Detect Thai characters
 const THAI_RE = /[\u0E00-\u0E7F]/;
-
-// Match @ai, @BruceBot, @BruceBot AI — flexible trigger
+// Match @ai or @BruceBot trigger
 const TRIGGER_RE = /^@(?:ai|brucebot(?:\s+ai)?)\s*(.*)/is;
 
-async function callGemini(userMessage, systemPrompt) {
-  const response = await genai.models.generateContent({
+async function callGemini(systemPrompt, userMessage) {
+  const model = genai.getGenerativeModel({
     model: MODEL,
-    contents: [{ role: 'user', parts: [{ text: userMessage }] }],
-    config: {
-      systemInstruction: systemPrompt,
-      safetySettings: [
-        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-      ],
-    },
+    systemInstruction: systemPrompt,
+    safetySettings: SAFETY_SETTINGS,
   });
-  return response.text?.trim();
+  const result = await model.generateContent(userMessage);
+  return result.response.text()?.trim();
 }
 
 async function handleEvent(event) {
@@ -71,20 +55,19 @@ async function handleEvent(event) {
   let systemPrompt;
 
   if (hasThai && !triggerMatch) {
-    // Auto-translate any Thai message — no trigger needed
+    // Auto-translate any Thai message
     userMessage = text;
     systemPrompt = TRANSLATION_PROMPT;
   } else if (triggerMatch) {
-    // @ai / @BruceBot trigger — general assistant mode
+    // @ai / @BruceBot — assistant mode
     userMessage = triggerMatch[1].trim() || 'hello';
-    systemPrompt = SYSTEM_PROMPT;
+    systemPrompt = ASSISTANT_PROMPT;
   } else {
-    // English, no trigger — ignore
     return null;
   }
 
   try {
-    const reply = await callGemini(userMessage, systemPrompt);
+    const reply = await callGemini(systemPrompt, userMessage);
     if (!reply) return null;
 
     return client.replyMessage({
@@ -95,14 +78,14 @@ async function handleEvent(event) {
     console.error('Gemini error:', err.message);
     return client.replyMessage({
       replyToken: event.replyToken,
-      messages: [{ type: 'text', text: '⚠️ Sorry, had trouble thinking. Try again!' }],
+      messages: [{ type: 'text', text: '⚠️ Translation error. Try again!' }],
     });
   }
 }
 
 module.exports = async (req, res) => {
   if (req.method === 'GET') {
-    return res.status(200).json({ status: 'ok', bot: 'BruceBot AI', trigger: '@ai or @BruceBot AI' });
+    return res.status(200).json({ status: 'ok', bot: 'BruceBot AI', model: MODEL });
   }
 
   if (req.method !== 'POST') {
@@ -110,13 +93,8 @@ module.exports = async (req, res) => {
   }
 
   const events = req.body?.events || [];
+  if (events.length === 0) return res.status(200).json({ status: 'ok' });
 
-  // LINE verification ping
-  if (events.length === 0) {
-    return res.status(200).json({ status: 'ok' });
-  }
-
-  // Verify signature
   const signature = req.headers['x-line-signature'];
   if (signature && LINE_CONFIG.channelSecret) {
     const body = JSON.stringify(req.body);
@@ -124,9 +102,7 @@ module.exports = async (req, res) => {
       .createHmac('sha256', LINE_CONFIG.channelSecret)
       .update(body)
       .digest('base64');
-    if (hash !== signature) {
-      return res.status(401).json({ error: 'Invalid signature' });
-    }
+    if (hash !== signature) return res.status(401).json({ error: 'Invalid signature' });
   }
 
   try {
