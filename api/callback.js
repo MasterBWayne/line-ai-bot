@@ -248,10 +248,7 @@ Never hallucinate game state or assume something wasn't said — check the histo
 
 Help them communicate, play, grow, and understand each other. Be fun, warm, and accurate.
 
-Always reply in BOTH languages:
-[English reply]
-
-🇹🇭 [Exact same reply in Thai]`;
+Write your full response in English first. Then write the exact same response in Thai below it, preceded by 🇹🇭. Never write placeholder text like "[English reply]" — write the actual content directly.`;
 
     // Add history as proper turns
     chatHistory.push({ role: 'user', text: `${displayName}: ${triggerMatch[1].trim() || 'hello'}` });
