@@ -226,7 +226,9 @@ async function handleEvent(event) {
   const text = event.message.text.trim();
   const hasThai = THAI_RE.test(text);
   const triggerMatch = text.match(TRIGGER_RE);
-  const isEnglishOnly = ENGLISH_RE.test(text);
+  // Strip @mentions before checking if English (e.g. "@I AM K I want..." should still translate)
+  const textWithoutMentions = text.replace(/@\S+\s*/g, '').trim();
+  const isEnglishOnly = ENGLISH_RE.test(textWithoutMentions) && !hasThai;
   const userId = event.source.userId;
   const chatType = event.source.type;
   const chatId = event.source.groupId || event.source.roomId || event.source.userId;
