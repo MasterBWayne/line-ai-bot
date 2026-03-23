@@ -7,6 +7,14 @@ const LINE_CONFIG = {
 };
 const client = new messagingApi.MessagingApiClient({ channelAccessToken: LINE_CONFIG.channelAccessToken });
 
+async function pushMessage(chatId, text) {
+  return fetch('https://api.line.me/v2/bot/message/push', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${LINE_CONFIG.channelAccessToken}` },
+    body: JSON.stringify({ to: chatId, messages: [{ type: 'text', text }] }),
+  });
+}
+
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const MODEL = 'gemini-2.5-flash-lite';
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`;
@@ -251,6 +259,32 @@ Always reply in BOTH languages:
   }
 
   try {
+    if (lang === 'cmd') {
+      // For @ai: reply immediately so token doesn't expire, then push real answer
+      await client.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{ type: 'text', text: '🤔 Thinking...' }],
+      });
+
+      // Now generate and push the real response (no token expiry pressure)
+      try {
+        const replyText = await Promise.race([
+          callGemini(systemPrompt, inputMessages),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('⏱️ Gemini took too long. Try a shorter question.')), 28000)),
+        ]);
+
+        const finalReply = replyText || '⚠️ Got an empty response. Try again.';
+        saveMessage(chatId, 'brucebot', 'BruceBot AI', finalReply, 'bot');
+        await pushMessage(chatId, finalReply);
+      } catch (err) {
+        console.error('@ai error:', err.message);
+        await pushMessage(chatId, `⚠️ Error: ${err.message}`);
+      }
+
+      return;
+    }
+
+    // Translations — need reply token (fast, usually <5s)
     const replyText = await Promise.race([
       callGemini(systemPrompt, inputMessages),
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 22000)),
@@ -258,15 +292,8 @@ Always reply in BOTH languages:
 
     if (!replyText) return null;
 
-    let finalReply = replyText;
-    if (lang === 'th' || lang === 'en') {
-      const flag = lang === 'th' ? '🇹🇭' : '🇺🇸';
-      finalReply = `${flag} ${displayName}:\n${replyText}`;
-    }
-
-    if (lang === 'cmd') {
-      saveMessage(chatId, 'brucebot', 'BruceBot AI', replyText, 'bot');
-    }
+    const flag = lang === 'th' ? '🇹🇭' : '🇺🇸';
+    const finalReply = `${flag} ${displayName}:\n${replyText}`;
 
     return client.replyMessage({
       replyToken: event.replyToken,
@@ -274,10 +301,15 @@ Always reply in BOTH languages:
     });
   } catch (err) {
     console.error('Error:', err.message);
-    return client.replyMessage({
-      replyToken: event.replyToken,
-      messages: [{ type: 'text', text: `⚠️ ${err.message}` }],
-    });
+    try {
+      return client.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{ type: 'text', text: `⚠️ Error: ${err.message}` }],
+      });
+    } catch (e2) {
+      // Token already expired — push instead
+      await pushMessage(chatId, `⚠️ Error: ${err.message}`);
+    }
   }
 }
 
