@@ -190,9 +190,10 @@ async function handleEvent(event) {
   const chatId = event.source.groupId || event.source.roomId || event.source.userId;
 
   let lang;
-  if (hasThai && !triggerMatch) lang = 'th';
-  else if (isEnglishOnly && !triggerMatch) lang = 'en';
-  else if (triggerMatch) lang = 'cmd';
+  // Trigger check FIRST — @ai always wins regardless of language
+  if (triggerMatch) lang = 'cmd';
+  else if (hasThai) lang = 'th';
+  else if (isEnglishOnly) lang = 'en';
   else return null;
 
   const [displayName, history, profile] = await Promise.all([
