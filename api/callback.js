@@ -8,11 +8,18 @@ const LINE_CONFIG = {
 const client = new messagingApi.MessagingApiClient({ channelAccessToken: LINE_CONFIG.channelAccessToken });
 
 async function pushMessage(chatId, text) {
-  return fetch('https://api.line.me/v2/bot/message/push', {
+  const res = await fetch('https://api.line.me/v2/bot/message/push', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${LINE_CONFIG.channelAccessToken}` },
     body: JSON.stringify({ to: chatId, messages: [{ type: 'text', text }] }),
   });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    console.error(`Push failed [${res.status}] to ${chatId}:`, JSON.stringify(body));
+  } else {
+    console.log(`Push sent to ${chatId}:`, body?.sentMessages?.[0]?.id);
+  }
+  return res.ok;
 }
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
