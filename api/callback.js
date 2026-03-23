@@ -260,25 +260,22 @@ Always reply in BOTH languages:
 
   try {
     if (lang === 'cmd') {
-      // For @ai: reply immediately so token doesn't expire, then push real answer
-      await client.replyMessage({
+      // For @ai: reply token acknowledged silently, push real answer when ready
+      // Use reply token immediately to avoid expiry, then push the actual response
+      client.replyMessage({
         replyToken: event.replyToken,
-        messages: [{ type: 'text', text: '🤔 Thinking...' }],
-      });
+        messages: [{ type: 'text', text: '👍' }],
+      }).catch(() => {}); // silent — just consuming the token
 
-      // Now generate and push the real response (no token expiry pressure)
+      // Generate and push real response with no time pressure
       try {
-        const replyText = await Promise.race([
-          callGemini(systemPrompt, inputMessages),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('⏱️ Gemini took too long. Try a shorter question.')), 28000)),
-        ]);
-
+        const replyText = await callGemini(systemPrompt, inputMessages);
         const finalReply = replyText || '⚠️ Got an empty response. Try again.';
         saveMessage(chatId, 'brucebot', 'BruceBot AI', finalReply, 'bot');
         await pushMessage(chatId, finalReply);
       } catch (err) {
         console.error('@ai error:', err.message);
-        await pushMessage(chatId, `⚠️ Error: ${err.message}`);
+        await pushMessage(chatId, `⚠️ ${err.message}`);
       }
 
       return;
