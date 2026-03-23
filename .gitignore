@@ -26,3 +26,4 @@ Thumbs.db
 # Vercel (not used for Railway deploy)
 .vercel/
 .vercel
+node_modules/
