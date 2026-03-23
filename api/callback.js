@@ -14,7 +14,7 @@ const client = new messagingApi.MessagingApiClient({
 
 const MODEL = 'gemini-2.0-flash';
 
-const SYSTEM_PROMPT = `You are a Thai-English translator and assistant in a LINE group chat.
+const SYSTEM_PROMPT = `You are a Thai-English translator and assistant in a LINE group chat used by a couple (Bruce speaks English, K/Orawan speaks Thai).
 
 When the user message is in Thai (or contains Thai text), you MUST:
 1. Translate EVERY SINGLE LINE into English. Do not skip, summarize, or condense any line.
@@ -25,42 +25,65 @@ When the user message is in Thai (or contains Thai text), you MUST:
    - มึง = you (rude/aggressive)
    - กู = I/me (rude/aggressive)
    - ห่า = fuck/damn
+   - เซอร์ไพรส์ = surprise
 4. Preserve the full emotional tone — angry stays angry, sweet stays sweet.
 5. Do NOT add commentary, do NOT summarize, just translate every line completely.
 
-When the user message is in English, respond helpfully and concisely in English.
-Never say you are Gemini or Google. You are just "AI" in their group chat.`;
+When the user message is in English and starts with @ai or @BruceBot, respond helpfully and concisely in English.
+Never say you are Gemini or Google. You are just "BruceBot AI" in their group chat.`;
+
+const TRANSLATION_PROMPT = `You are a Thai-English translator. Translate the following Thai text into English faithfully, line by line. Do not skip any line. For slang or profanity, translate it directly and add a brief note in parentheses if needed.`;
+
+// Detect if text contains Thai characters
+const THAI_RE = /[\u0E00-\u0E7F]/;
 
 // Match @ai, @BruceBot, @BruceBot AI — flexible trigger
 const TRIGGER_RE = /^@(?:ai|brucebot(?:\s+ai)?)\s*(.*)/is;
+
+async function callGemini(userMessage, systemPrompt) {
+  const response = await genai.models.generateContent({
+    model: MODEL,
+    contents: [
+      { role: 'user', parts: [{ text: userMessage }] }
+    ],
+    config: {
+      systemInstruction: systemPrompt,
+      safetySettings: [
+        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+      ],
+    },
+  });
+  return response.text?.trim();
+}
 
 async function handleEvent(event) {
   if (event.type !== 'message' || event.message.type !== 'text') return null;
 
   const text = event.message.text.trim();
-  const match = text.match(TRIGGER_RE);
-  if (!match) return null;
+  const hasThai = THAI_RE.test(text);
+  const triggerMatch = text.match(TRIGGER_RE);
 
-  const userMessage = match[1].trim() || 'hello';
+  let userMessage;
+  let systemPrompt;
+
+  if (hasThai && !triggerMatch) {
+    // Auto-translate any Thai message — no trigger needed
+    userMessage = text;
+    systemPrompt = TRANSLATION_PROMPT;
+  } else if (triggerMatch) {
+    // @ai / @BruceBot trigger — general assistant mode
+    userMessage = triggerMatch[1].trim() || 'hello';
+    systemPrompt = SYSTEM_PROMPT;
+  } else {
+    // English, no trigger — ignore
+    return null;
+  }
 
   try {
-    const response = await genai.models.generateContent({
-      model: MODEL,
-      contents: [
-        { role: 'user', parts: [{ text: userMessage }] }
-      ],
-      config: {
-        systemInstruction: SYSTEM_PROMPT,
-        safetySettings: [
-          { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-          { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-          { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-          { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-        ],
-      },
-    });
-
-    const reply = response.text?.trim();
+    const reply = await callGemini(userMessage, systemPrompt);
     if (!reply) return null;
 
     return client.replyMessage({
