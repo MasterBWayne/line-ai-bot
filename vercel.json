@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "routes": [
+    { "src": "/callback", "dest": "/api/callback.js" },
+    { "src": "/webhook", "dest": "/api/callback.js" },
+    { "src": "/(.*)", "dest": "/api/callback.js" }
+  ]
+}
