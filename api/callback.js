@@ -1,5 +1,5 @@
 const { messagingApi } = require('@line/bot-sdk');
-const { GoogleGenAI } = require('@google/genai');
+const OpenAI = require('openai');
 const crypto = require('crypto');
 
 const LINE_CONFIG = {
@@ -7,12 +7,12 @@ const LINE_CONFIG = {
   channelSecret: process.env.LINE_CHANNEL_SECRET || '',
 };
 
-const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY || '' });
 const client = new messagingApi.MessagingApiClient({
   channelAccessToken: LINE_CONFIG.channelAccessToken,
 });
 
-const MODEL = 'gemini-2.0-flash';
+const MODEL = 'gpt-4o-mini';
 
 const SYSTEM_PROMPT = `You are a Thai-English translator and assistant in a LINE group chat used by a couple (Bruce speaks English, K/Orawan speaks Thai).
 
@@ -40,23 +40,15 @@ const THAI_RE = /[\u0E00-\u0E7F]/;
 // Match @ai, @BruceBot, @BruceBot AI — flexible trigger
 const TRIGGER_RE = /^@(?:ai|brucebot(?:\s+ai)?)\s*(.*)/is;
 
-async function callGemini(userMessage, systemPrompt) {
-  const response = await genai.models.generateContent({
+async function callGPT(userMessage, systemPrompt) {
+  const response = await openai.chat.completions.create({
     model: MODEL,
-    contents: [
-      { role: 'user', parts: [{ text: userMessage }] }
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userMessage },
     ],
-    config: {
-      systemInstruction: systemPrompt,
-      safetySettings: [
-        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-      ],
-    },
   });
-  return response.text?.trim();
+  return response.choices[0]?.message?.content?.trim();
 }
 
 async function handleEvent(event) {
@@ -83,7 +75,7 @@ async function handleEvent(event) {
   }
 
   try {
-    const reply = await callGemini(userMessage, systemPrompt);
+    const reply = await callGPT(userMessage, systemPrompt);
     if (!reply) return null;
 
     return client.replyMessage({
