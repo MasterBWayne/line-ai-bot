@@ -213,14 +213,19 @@ async function handleEvent(event) {
   saveMessage(chatId, userId, displayName, text, lang);
   learnFromMessage(chatId, displayName, text, lang, profile); // non-blocking
 
-  // Build history turns for @ai — include ALL messages so bot knows full context
+  // Build history for @ai — last 20 messages only to keep context tight and accurate
   const chatHistory = [];
   if (lang === 'cmd') {
-    for (const msg of history) {
+    const recentHistory = history.slice(-20);
+    for (const msg of recentHistory) {
       if (msg.lang === 'bot') {
-        chatHistory.push({ role: 'model', text: msg.text });
-      } else {
-        // All user messages (Thai, English, @ai) go in as user turns so bot sees full picture
+        // Strip placeholder text from old bot messages too
+        const cleaned = msg.text
+          .replace(/\[English reply\]\n?/gi, '')
+          .replace(/\[Exact same reply in Thai\]\n?/gi, '')
+          .trim();
+        if (cleaned) chatHistory.push({ role: 'model', text: cleaned });
+      } else if (msg.lang === 'cmd' || msg.lang === 'th' || msg.lang === 'en') {
         chatHistory.push({ role: 'user', text: `${msg.display_name}: ${msg.text}` });
       }
     }
@@ -274,8 +279,15 @@ Write your full response in English first. Then write the exact same response in
 
       // Generate and push real response with no time pressure
       try {
-        const replyText = await callGemini(systemPrompt, inputMessages);
-        const finalReply = replyText || '⚠️ Got an empty response. Try again.';
+        const rawReply = await callGemini(systemPrompt, inputMessages);
+        // Strip any [English reply] / [Exact same reply in Thai] placeholder artifacts
+        const cleanReply = (rawReply || '')
+          .replace(/\[English reply\]\n?/gi, '')
+          .replace(/\[Exact same reply in Thai\]\n?/gi, '')
+          .replace(/\[Same reply in Thai\]\n?/gi, '')
+          .replace(/\[Thai reply\]\n?/gi, '')
+          .trim();
+        const finalReply = cleanReply || '⚠️ Got an empty response. Try again.';
         saveMessage(chatId, 'brucebot', 'BruceBot AI', finalReply, 'bot');
         await pushMessage(chatId, finalReply);
       } catch (err) {
