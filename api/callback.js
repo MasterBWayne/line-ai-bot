@@ -14,15 +14,74 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const MODEL = 'gemini-2.5-flash-lite';
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
-const THAI_TO_EN_PROMPT = `Translate Thai to English. Rules: translate every line (no skipping), preserve tone, translate slang accurately. Then add "Context: [1-2 sentences on emotional subtext]". Output only translation + context.`;
-
-const EN_TO_THAI_PROMPT = `You are a professional English-Thai translation tool. Translate the given English text into natural conversational Thai suitable for texting between a couple. Output only the Thai translation. No intro, no advice.`;
-
-const ASSISTANT_PROMPT = `You are a helpful assistant in a LINE group chat. Reply concisely. Match the user's language (Thai → Thai, English → English).`;
+const SUPABASE_URL = process.env.SUPABASE_URL || '';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || '';
 
 const THAI_RE = /[\u0E00-\u0E7F]/;
 const ENGLISH_RE = /^[a-zA-Z][a-zA-Z0-9\s.,!?'"()\-:;]{2,}$/;
 const TRIGGER_RE = /^@(?:ai|brucebot(?:\s+ai)?)\s*(.*)/is;
+
+// ─── Supabase: conversation memory ───────────────────────────────────────────
+
+async function saveMessage(chatId, userId, displayName, text, lang) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return;
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Prefer': 'return=minimal',
+      },
+      body: JSON.stringify({ chat_id: chatId, user_id: userId, display_name: displayName, text, lang }),
+    });
+  } catch (e) {
+    console.error('Supabase save error:', e.message);
+  }
+}
+
+async function getRecentMessages(chatId, limit = 10) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return [];
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/messages?chat_id=eq.${encodeURIComponent(chatId)}&order=created_at.desc&limit=${limit}`,
+      {
+        headers: {
+          'apikey': SUPABASE_KEY,
+          'Authorization': `Bearer ${SUPABASE_KEY}`,
+        },
+      }
+    );
+    const rows = await res.json();
+    return Array.isArray(rows) ? rows.reverse() : [];
+  } catch (e) {
+    console.error('Supabase fetch error:', e.message);
+    return [];
+  }
+}
+
+// ─── LINE: get sender display name ───────────────────────────────────────────
+
+async function getDisplayName(userId, chatId, chatType) {
+  try {
+    if (chatType === 'group') {
+      const member = await client.getGroupMemberProfile(chatId, userId);
+      return member.displayName || 'Member';
+    } else if (chatType === 'room') {
+      const member = await client.getRoomMemberProfile(chatId, userId);
+      return member.displayName || 'Member';
+    } else {
+      const profile = await client.getProfile(userId);
+      return profile.displayName || 'User';
+    }
+  } catch (e) {
+    console.error('getDisplayName error:', e.message);
+    return 'User';
+  }
+}
+
+// ─── Gemini call ─────────────────────────────────────────────────────────────
 
 async function callGemini(systemPrompt, userMessage) {
   const body = {
@@ -44,15 +103,15 @@ async function callGemini(systemPrompt, userMessage) {
 
   if (!res.ok) {
     const err = await res.text();
-    console.error('Gemini API error:', res.status, err.slice(0, 300));
+    console.error('Gemini error:', res.status, err.slice(0, 200));
     return null;
   }
 
   const data = await res.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-  console.log('Gemini reply length:', text?.length ?? 'null', '| finish:', data.candidates?.[0]?.finishReason);
-  return text || null;
+  return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
 }
+
+// ─── Event handler ───────────────────────────────────────────────────────────
 
 async function handleEvent(event) {
   if (event.type !== 'message' || event.message.type !== 'text') return null;
@@ -61,31 +120,71 @@ async function handleEvent(event) {
   const hasThai = THAI_RE.test(text);
   const triggerMatch = text.match(TRIGGER_RE);
   const isEnglishOnly = ENGLISH_RE.test(text);
+  const userId = event.source.userId;
 
-  let userMessage, systemPrompt;
+  // Determine chat context
+  const chatType = event.source.type; // 'user', 'group', 'room'
+  const chatId = event.source.groupId || event.source.roomId || event.source.userId;
+
+  let userMessage, systemPrompt, lang;
 
   if (hasThai && !triggerMatch) {
     userMessage = text;
-    systemPrompt = THAI_TO_EN_PROMPT;
+    lang = 'th';
   } else if (isEnglishOnly && !triggerMatch) {
     userMessage = text;
-    systemPrompt = EN_TO_THAI_PROMPT;
+    lang = 'en';
   } else if (triggerMatch) {
     userMessage = triggerMatch[1].trim() || 'hello';
-    systemPrompt = ASSISTANT_PROMPT;
+    lang = 'cmd';
   } else {
     return null;
+  }
+
+  // Get sender name + recent history in parallel
+  const [displayName, history] = await Promise.all([
+    getDisplayName(userId, chatId, chatType),
+    getRecentMessages(chatId, 10),
+  ]);
+
+  // Save this message
+  saveMessage(chatId, userId, displayName, text, lang);
+
+  // Build context string from history
+  let contextBlock = '';
+  if (history.length > 0) {
+    const historyLines = history
+      .map(m => `${m.display_name}: ${m.text}`)
+      .join('\n');
+    contextBlock = `\n\nRecent conversation history (for context only, do not translate these):\n${historyLines}`;
+  }
+
+  if (lang === 'th') {
+    systemPrompt = `Translate Thai to English. Translate every line, no skipping. Preserve tone. Translate slang accurately. Then add "Context: [1-2 sentences on emotional subtext]". Output only translation and context.${contextBlock}`;
+  } else if (lang === 'en') {
+    systemPrompt = `Translate English to natural conversational Thai for texting. Output only the Thai translation.${contextBlock}`;
+  } else {
+    systemPrompt = `You are a helpful assistant in a LINE group chat. Reply concisely in the same language as the user.${contextBlock}`;
   }
 
   try {
     const replyText = await Promise.race([
       callGemini(systemPrompt, userMessage),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 20000)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 22000)),
     ]);
+
+    if (!replyText) return null;
+
+    // Add sender label for translations
+    let finalReply = replyText;
+    if (lang === 'th' || lang === 'en') {
+      const flag = lang === 'th' ? '🇹🇭' : '🇺🇸';
+      finalReply = `${flag} ${displayName}:\n${replyText}`;
+    }
 
     return client.replyMessage({
       replyToken: event.replyToken,
-      messages: [{ type: 'text', text: replyText || '⚠️ Could not translate. Try again.' }],
+      messages: [{ type: 'text', text: finalReply }],
     });
   } catch (err) {
     console.error('handleEvent error:', err.message);
@@ -96,43 +195,36 @@ async function handleEvent(event) {
   }
 }
 
+// ─── Main handler ─────────────────────────────────────────────────────────────
+
 module.exports = async (req, res) => {
   if (req.method === 'GET') {
     if (req.url?.includes('test')) {
       const raw = req.url.split('text=')[1] || '';
       const text = decodeURIComponent(raw) || 'ที่ร้านอาหารญี่ปุ่น\nJimmy ยอมรับ';
       try {
-        const reply = await callGemini(THAI_TO_EN_PROMPT, text);
+        const reply = await callGemini(
+          'Translate Thai to English. Translate every line, no skipping. Preserve tone. Add Context line.',
+          text
+        );
         return res.status(200).json({ input: text, output: reply });
       } catch (e) {
         return res.status(500).json({ error: e.message });
       }
     }
-    return res.status(200).json({ status: 'ok', bot: 'BruceBot AI', model: MODEL });
+    return res.status(200).json({ status: 'ok', bot: 'BruceBot AI', model: MODEL, features: ['Thai↔EN auto-translate', 'sender label', 'conversation memory'] });
   }
 
   if (req.method !== 'POST') return res.status(405).end();
 
   const events = req.body?.events || [];
-
-  // Log every webhook call — shows us what LINE is actually sending
-  console.log(`Webhook: ${events.length} event(s)`);
-  events.forEach((e, i) => {
-    const text = e.message?.text || '';
-    const hasThai = THAI_RE.test(text);
-    console.log(`Event[${i}]: type=${e.type} msgType=${e.message?.type} hasThai=${hasThai} text="${text.slice(0, 80)}"`);
-  });
-
   if (events.length === 0) return res.status(200).json({ status: 'ok' });
 
   const signature = req.headers['x-line-signature'];
   if (signature && LINE_CONFIG.channelSecret) {
     const body = JSON.stringify(req.body);
     const hash = crypto.createHmac('sha256', LINE_CONFIG.channelSecret).update(body).digest('base64');
-    if (hash !== signature) {
-      console.error('Signature mismatch — rejecting');
-      return res.status(401).json({ error: 'Invalid signature' });
-    }
+    if (hash !== signature) return res.status(401).json({ error: 'Invalid signature' });
   }
 
   try {
