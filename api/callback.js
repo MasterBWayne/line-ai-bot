@@ -280,16 +280,27 @@ Write your full response in English first. Then write the exact same response in
       // Generate and push real response with no time pressure
       try {
         const rawReply = await callGemini(systemPrompt, inputMessages);
-        // Strip any [English reply] / [Exact same reply in Thai] placeholder artifacts
+        // Strip placeholder artifacts Gemini keeps outputting
         const cleanReply = (rawReply || '')
-          .replace(/\[English reply\]\n?/gi, '')
-          .replace(/\[Exact same reply in Thai\]\n?/gi, '')
-          .replace(/\[Same reply in Thai\]\n?/gi, '')
-          .replace(/\[Thai reply\]\n?/gi, '')
+          .replace(/^\s*\[English reply\]\s*/gi, '')
+          .replace(/\n\s*\[Exact same reply in Thai\]\s*/gi, '\n🇹🇭 ')
+          .replace(/\n\s*\[Same reply in Thai\]\s*/gi, '\n🇹🇭 ')
+          .replace(/\n\s*\[Thai reply\]\s*/gi, '\n🇹🇭 ')
+          .replace(/^\s*\[Exact same reply in Thai\]\s*/gi, '🇹🇭 ')
+          .replace(/^\s*\[Same reply in Thai\]\s*/gi, '🇹🇭 ')
           .trim();
-        const finalReply = cleanReply || '⚠️ Got an empty response. Try again.';
-        saveMessage(chatId, 'brucebot', 'BruceBot AI', finalReply, 'bot');
-        await pushMessage(chatId, finalReply);
+        if (!cleanReply) {
+          await pushMessage(chatId, '⚠️ Got an empty response. Try again.');
+          return;
+        }
+        // Dedup — don't push if same as last bot message
+        const lastBotMsgs = history.filter(m => m.user_id === 'brucebot').slice(-1);
+        if (lastBotMsgs.length > 0 && lastBotMsgs[0].text.slice(0, 50) === cleanReply.slice(0, 50)) {
+          console.log('Dedup: skipping duplicate push');
+          return;
+        }
+        saveMessage(chatId, 'brucebot', 'BruceBot AI', cleanReply, 'bot');
+        await pushMessage(chatId, cleanReply);
       } catch (err) {
         console.error('@ai error:', err.message);
         await pushMessage(chatId, `⚠️ ${err.message}`);
