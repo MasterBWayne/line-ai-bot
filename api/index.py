@@ -25,8 +25,12 @@ from api.chatgpt import ChatGPT
 line_bot_api = LineBotApi(os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
 line_handler = WebhookHandler(os.getenv("LINE_CHANNEL_SECRET"))
 
-TRIGGER = "@ai"
-TRIGGER_PATTERN = re.compile(r"^@ai\s+(.+)", re.IGNORECASE | re.DOTALL)
+TRIGGER = "@ai / @BruceBot AI"
+# Match: @ai, @brucebot, @BruceBot AI, or any message mentioning the bot
+TRIGGER_PATTERN = re.compile(
+    r"^(?:@ai|@brucebot(?:\s+ai)?)\s+(.+)|^(?:@ai|@brucebot(?:\s+ai)?)\s*$",
+    re.IGNORECASE | re.DOTALL
+)
 
 app = Flask(__name__)
 chatgpt = ChatGPT()
@@ -76,11 +80,11 @@ def handle_message(event):
     is_group = isinstance(source, (SourceGroup, SourceRoom))
 
     if is_group:
-        # In group chats: only respond to @ai trigger
+        # In group chats: respond to @ai OR @BruceBot OR @BruceBot AI
         match = TRIGGER_PATTERN.match(text)
         if not match:
             return
-        user_message = match.group(1).strip()
+        user_message = (match.group(1) or "hello").strip()
     else:
         # In 1:1 chats: respond to everything
         user_message = text
