@@ -591,9 +591,7 @@ async function handleEvent(event) {
    - มึง/กู = very rude/aggressive pronouns
    - ช่วงเวลาสั้นๆ = in such a short time
    - ยิ้มแย้ม = smiling sweetly/warmly
-3. Preserve the full emotional weight exactly as the Thai speaker intended
-4. After the translation, add:
-💭 What they're feeling: [1-2 sentences on the emotion and intent, as a Thai person would understand it]`;
+3. Preserve the full emotional weight exactly as the Thai speaker intended`;
     inputMessages = [{ role: 'user', text }];
 
   } else if (lang === 'en') {
@@ -605,8 +603,7 @@ async function handleEvent(event) {
 - Keep it natural — not formal, not textbook Thai
 - If slang or cultural concepts don't translate directly, use the closest Thai equivalent
 
-Output the Thai translation first. Then on a new line add:
-💡 [Brief cultural context note in English — tone, formality level, or anything that helps Bruce understand the nuance]`;
+Output ONLY the Thai translation. Nothing else.`;
     inputMessages = [{ role: 'user', text }];
 
   } else {
