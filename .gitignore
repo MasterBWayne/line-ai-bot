@@ -1,29 +1,3 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg-info/
-dist/
-build/
-venv/
-.venv/
-env/
-
-# Environment
-.env
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Vercel (not used for Railway deploy)
-.vercel/
-.vercel
 node_modules/
+.env
+.env.local
