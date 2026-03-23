@@ -197,12 +197,16 @@ async function handleEvent(event) {
   saveMessage(chatId, userId, displayName, text, lang);
   learnFromMessage(chatId, displayName, text, lang, profile); // non-blocking
 
-  // Build history turns for @ai
+  // Build history turns for @ai — include ALL messages so bot knows full context
   const chatHistory = [];
   if (lang === 'cmd') {
     for (const msg of history) {
-      if (msg.lang === 'cmd') chatHistory.push({ role: 'user', text: `${msg.display_name}: ${msg.text}` });
-      else if (msg.lang === 'bot') chatHistory.push({ role: 'model', text: msg.text });
+      if (msg.lang === 'bot') {
+        chatHistory.push({ role: 'model', text: msg.text });
+      } else {
+        // All user messages (Thai, English, @ai) go in as user turns so bot sees full picture
+        chatHistory.push({ role: 'user', text: `${msg.display_name}: ${msg.text}` });
+      }
     }
   }
 
@@ -226,7 +230,15 @@ async function handleEvent(event) {
     systemPrompt = `${BOT_IDENTITY}
 ${profileSummary}
 
-Help them communicate, play, grow, and understand each other. Give advice, suggest date ideas, games, conversation starters — anything they need. Notice patterns and gently reflect them back when relevant.
+CRITICAL RULE: Before responding, carefully read the full conversation history below. Track exactly:
+- What game or activity is being played (if any)
+- What each person has said and answered
+- What has happened so far in the current thread
+- What the last @ai message was and what you replied
+
+Never hallucinate game state or assume something wasn't said — check the history. If Bruce answered a question, acknowledge it. If a game is in progress, continue it correctly.
+
+Help them communicate, play, grow, and understand each other. Be fun, warm, and accurate.
 
 Always reply in BOTH languages:
 [English reply]
