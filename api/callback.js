@@ -12,7 +12,7 @@ const client = new messagingApi.MessagingApiClient({
   channelAccessToken: LINE_CONFIG.channelAccessToken,
 });
 
-const MODEL = 'gemini-2.5-flash';
+const MODEL = 'gemini-2.0-flash';
 
 const SYSTEM_PROMPT = `You are a helpful, friendly AI assistant in a LINE group chat used by a couple (Bruce speaks English, Orawan speaks Thai).
 
