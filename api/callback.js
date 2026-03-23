@@ -46,18 +46,31 @@ async function getRecentMessages(chatId, limit = 10) {
   try {
     const res = await fetch(
       `${SUPABASE_URL}/rest/v1/messages?chat_id=eq.${encodeURIComponent(chatId)}&order=created_at.desc&limit=${limit}`,
-      {
-        headers: {
-          'apikey': SUPABASE_KEY,
-          'Authorization': `Bearer ${SUPABASE_KEY}`,
-        },
-      }
+      { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` } }
     );
     const rows = await res.json();
     return Array.isArray(rows) ? rows.reverse() : [];
   } catch (e) {
     console.error('Supabase fetch error:', e.message);
     return [];
+  }
+}
+
+async function saveBotReply(chatId, text) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return;
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Prefer': 'return=minimal',
+      },
+      body: JSON.stringify({ chat_id: chatId, user_id: 'brucebot', display_name: 'BruceBot AI', text, lang: 'bot' }),
+    });
+  } catch (e) {
+    console.error('Supabase bot save error:', e.message);
   }
 }
 
@@ -83,10 +96,17 @@ async function getDisplayName(userId, chatId, chatType) {
 
 // ─── Gemini call ─────────────────────────────────────────────────────────────
 
-async function callGemini(systemPrompt, userMessage) {
+async function callGemini(systemPrompt, userMessage, chatHistory = []) {
+  // Build contents array: history turns + current message
+  const contents = [];
+  for (const msg of chatHistory) {
+    contents.push({ role: msg.role, parts: [{ text: msg.text }] });
+  }
+  contents.push({ role: 'user', parts: [{ text: userMessage }] });
+
   const body = {
     system_instruction: { parts: [{ text: systemPrompt }] },
-    contents: [{ role: 'user', parts: [{ text: userMessage }] }],
+    contents,
     safetySettings: [
       { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
       { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
@@ -159,17 +179,26 @@ async function handleEvent(event) {
     contextBlock = `\n\nRecent conversation history (for context only, do not translate these):\n${historyLines}`;
   }
 
+  // Build chat history for @ai assistant mode (proper turn-by-turn)
+  let chatHistory = [];
+  if (lang === 'cmd' && history.length > 0) {
+    for (const msg of history) {
+      if (msg.lang === 'cmd') chatHistory.push({ role: 'user', text: msg.text });
+      else if (msg.lang === 'bot') chatHistory.push({ role: 'model', text: msg.text });
+    }
+  }
+
   if (lang === 'th') {
     systemPrompt = `Translate Thai to English. Translate every line, no skipping. Preserve tone. Translate slang accurately. Then add "Context: [1-2 sentences on emotional subtext]". Output only translation and context.${contextBlock}`;
   } else if (lang === 'en') {
     systemPrompt = `Translate English to natural conversational Thai for texting. Output only the Thai translation.${contextBlock}`;
   } else {
-    systemPrompt = `You are a helpful assistant in a LINE group chat. Reply concisely in the same language as the user.${contextBlock}`;
+    systemPrompt = `You are a helpful, fun assistant in a LINE group chat between a couple. Be concise and engaging. Reply in the same language as the user.`;
   }
 
   try {
     const replyText = await Promise.race([
-      callGemini(systemPrompt, userMessage),
+      callGemini(systemPrompt, userMessage, chatHistory),
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 22000)),
     ]);
 
@@ -181,6 +210,9 @@ async function handleEvent(event) {
       const flag = lang === 'th' ? '🇹🇭' : '🇺🇸';
       finalReply = `${flag} ${displayName}:\n${replyText}`;
     }
+
+    // Save bot reply to memory (for @ai conversation continuity)
+    if (lang === 'cmd') saveBotReply(chatId, replyText);
 
     return client.replyMessage({
       replyToken: event.replyToken,
