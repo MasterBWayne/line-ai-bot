@@ -8,14 +8,33 @@ const LINE_CONFIG = {
 const client = new messagingApi.MessagingApiClient({ channelAccessToken: LINE_CONFIG.channelAccessToken });
 
 async function pushMessage(chatId, text) {
+  // LINE max message length is 5000 chars — truncate if needed
+  const safeText = (text || '').slice(0, 4900);
+  const payload = JSON.stringify({ to: chatId, messages: [{ type: 'text', text: safeText }] });
+  
   const res = await fetch('https://api.line.me/v2/bot/message/push', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${LINE_CONFIG.channelAccessToken}` },
-    body: JSON.stringify({ to: chatId, messages: [{ type: 'text', text }] }),
+    headers: { 
+      'Content-Type': 'application/json; charset=UTF-8', 
+      'Authorization': `Bearer ${LINE_CONFIG.channelAccessToken}` 
+    },
+    body: payload,
   });
-  const body = await res.json().catch(() => ({}));
+  
+  let body = {};
+  try { body = await res.json(); } catch (e) { /* ignore */ }
+  
   if (!res.ok) {
     console.error(`Push failed [${res.status}] to ${chatId}:`, JSON.stringify(body));
+    // If message too long, send truncated version with notice
+    if (res.status === 400) {
+      const shortText = safeText.slice(0, 2000) + '\n\n[Response truncated — ask me to continue]';
+      await fetch('https://api.line.me/v2/bot/message/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=UTF-8', 'Authorization': `Bearer ${LINE_CONFIG.channelAccessToken}` },
+        body: JSON.stringify({ to: chatId, messages: [{ type: 'text', text: shortText }] }),
+      });
+    }
   } else {
     console.log(`Push sent to ${chatId}:`, body?.sentMessages?.[0]?.id);
   }
