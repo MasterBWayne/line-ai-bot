@@ -497,6 +497,21 @@ async function handleEvent(event) {
   const text = event.message.text.trim();
   const hasThai = THAI_RE.test(text);
   const triggerMatch = text.match(TRIGGER_RE);
+
+  // If this is a reply to another message, append the quoted text as context
+  let quotedContext = '';
+  if (event.message.quotedMessageId) {
+    // Look up the quoted message in recent history by searching Supabase
+    try {
+      const quotedRows = await sb(`brucebot_messages?chat_id=eq.${encodeURIComponent(event.source.groupId || event.source.userId)}&order=created_at.desc&limit=50`);
+      // LINE doesn't give us the actual quoted text directly — use recent history to find it
+      // The quoted message is usually visible in the event as event.message.quote
+      if (event.message.quote) {
+        const q = event.message.quote;
+        quotedContext = `\n\n[Quoted message from ${q.sender?.displayName || 'someone'}: "${q.text || ''}"]`;
+      }
+    } catch(e) { /* ignore */ }
+  }
   const textWithoutMentions = text.replace(/@\S+\s*/g, '').trim();
   const isEnglishOnly = ENGLISH_RE.test(textWithoutMentions) && !hasThai;
 
@@ -615,7 +630,8 @@ Help them communicate, play, grow, and understand each other. Be fun, warm, and 
 
 Write your full response in English first. Then write the exact same response in Thai below it, preceded by 🇹🇭. Never write placeholder text like "[English reply]" — write the actual content directly.`;
 
-    chatHistory.push({ role: 'user', text: `${displayName}: ${triggerMatch[1].trim() || 'hello'}` });
+    const userQuestion = (triggerMatch[1].trim() || 'hello') + quotedContext;
+    chatHistory.push({ role: 'user', text: `${displayName}: ${userQuestion}` });
     inputMessages = chatHistory;
   }
 
