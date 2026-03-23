@@ -45,6 +45,9 @@ Core rules you never break:
 4. Always read their history and profile before responding
 5. Learn something from every message and update the profile`;
 
+// In-memory dedup for LINE event IDs (survives within same Render instance)
+const processedEvents = new Set();
+
 const THAI_RE = /[\u0E00-\u0E7F]/;
 const ENGLISH_RE = /^[a-zA-Z][a-zA-Z0-9\s.,!?'"()\-:;]{2,}$/;
 const TRIGGER_RE = /^@(?:ai|brucebot(?:\s+ai)?)\s*(.*)/is;
@@ -187,6 +190,19 @@ async function getDisplayName(userId, chatId, chatType) {
 
 async function handleEvent(event) {
   if (event.type !== 'message' || event.message.type !== 'text') return null;
+
+  // Dedup by LINE message ID — prevents duplicate processing if LINE retries webhook
+  const eventKey = event.message.id;
+  if (processedEvents.has(eventKey)) {
+    console.log('Dedup: already processed message', eventKey);
+    return null;
+  }
+  processedEvents.add(eventKey);
+  // Keep set small — only last 200 events
+  if (processedEvents.size > 200) {
+    const first = processedEvents.values().next().value;
+    processedEvents.delete(first);
+  }
 
   const text = event.message.text.trim();
   const hasThai = THAI_RE.test(text);
