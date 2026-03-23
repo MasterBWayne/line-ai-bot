@@ -61,7 +61,25 @@ async function callGemini(systemPrompt, userMessage) {
     safetySettings: SAFETY_SETTINGS,
   });
   const result = await model.generateContent(userMessage);
-  return result.response.text()?.trim();
+  const response = result.response;
+
+  // Check if blocked
+  const blockReason = response.promptFeedback?.blockReason;
+  if (blockReason) {
+    console.error('Gemini blocked:', blockReason);
+    return `[Blocked: ${blockReason}]`;
+  }
+
+  // Check finish reason
+  const finishReason = response.candidates?.[0]?.finishReason;
+  if (finishReason && finishReason !== 'STOP') {
+    console.error('Gemini finish reason:', finishReason);
+    return `[Finish: ${finishReason}]`;
+  }
+
+  const text = response.text()?.trim();
+  console.log('Gemini response length:', text?.length, '| finish:', finishReason);
+  return text;
 }
 
 async function handleEvent(event) {
@@ -121,6 +139,16 @@ async function handleEvent(event) {
 
 module.exports = async (req, res) => {
   if (req.method === 'GET') {
+    // Test endpoint: /test?text=ที่ร้าน
+    if (req.url?.includes('/test')) {
+      const text = req.query?.text || 'ที่ร้านอาหารญี่ปุ่น\nJimmy ยอมรับ';
+      try {
+        const reply = await callGemini(THAI_TO_EN_PROMPT, text);
+        return res.status(200).json({ input: text, output: reply });
+      } catch (e) {
+        return res.status(500).json({ error: e.message });
+      }
+    }
     return res.status(200).json({ status: 'ok', bot: 'BruceBot AI', model: MODEL });
   }
 
