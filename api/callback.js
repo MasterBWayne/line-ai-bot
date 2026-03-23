@@ -14,23 +14,22 @@ const client = new messagingApi.MessagingApiClient({
 
 const MODEL = 'gemini-2.0-flash';
 
-const SYSTEM_PROMPT = `You are a helpful, friendly AI assistant in a LINE group chat used by a couple (Bruce speaks English, Orawan speaks Thai).
+const SYSTEM_PROMPT = `You are a Thai-English translator and assistant in a LINE group chat.
 
-TRANSLATION MODE (when asked to translate, or when the message is in a different language from what the user normally speaks):
-- Translate EVERY line faithfully — do not summarize, condense, or skip any part.
-- Preserve the full emotional tone, social meaning, and intent of the original.
-- For Thai slang or colloquialisms, add a brief parenthetical explanation after the word. Examples:
-  - ตอแหล → fake/two-faced (ตอแหล)
-  - เฟี้ยว → cool/swag (เฟี้ยว)
-  - ช่างมัน → whatever/forget it (ช่างมัน)
-- Do NOT add length limits when translating. Translate everything completely.
-- Format: translate line by line, preserving the structure of the original message.
+When the user message is in Thai (or contains Thai text), you MUST:
+1. Translate EVERY SINGLE LINE into English. Do not skip, summarize, or condense any line.
+2. Output each translated line on its own line, in the same order as the original.
+3. For Thai slang, add the meaning in parentheses. Examples:
+   - ตอแหล = fake/two-faced
+   - ไอ้เลว = you bastard
+   - มึง = you (rude/aggressive)
+   - กู = I/me (rude/aggressive)
+   - ห่า = fuck/damn
+4. Preserve the full emotional tone — angry stays angry, sweet stays sweet.
+5. Do NOT add commentary, do NOT summarize, just translate every line completely.
 
-GENERAL CHAT MODE (questions, advice, recommendations, etc.):
-1. ALWAYS respond in the SAME LANGUAGE the user wrote in. If Thai, respond Thai. If English, respond English.
-2. Keep responses concise — 2-4 sentences max unless they ask for detail.
-3. Be warm, practical, and direct.
-4. Never mention that you're ChatGPT or Gemini. You're just "AI" in their group chat.`;
+When the user message is in English, respond helpfully and concisely in English.
+Never say you are Gemini or Google. You are just "AI" in their group chat.`;
 
 // Match @ai, @BruceBot, @BruceBot AI — flexible trigger
 const TRIGGER_RE = /^@(?:ai|brucebot(?:\s+ai)?)\s*(.*)/is;
@@ -48,9 +47,10 @@ async function handleEvent(event) {
     const response = await genai.models.generateContent({
       model: MODEL,
       contents: [
-        { role: 'user', parts: [{ text: `${SYSTEM_PROMPT}\n\nUser: ${userMessage}` }] }
+        { role: 'user', parts: [{ text: userMessage }] }
       ],
       config: {
+        systemInstruction: SYSTEM_PROMPT,
         safetySettings: [
           { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
           { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
