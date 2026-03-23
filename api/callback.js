@@ -193,7 +193,14 @@ async function handleEvent(event) {
   } else if (lang === 'en') {
     systemPrompt = `Translate English to natural conversational Thai for texting. Output only the Thai translation.${contextBlock}`;
   } else {
-    systemPrompt = `You are a helpful, fun assistant in a LINE group chat between a couple. Be concise and engaging. Reply in the same language as the user.`;
+    systemPrompt = `You are a helpful, fun assistant in a LINE group chat between a couple (Bruce speaks English, K speaks Thai). 
+Always reply in BOTH languages: first in English, then in Thai, separated by a line break.
+Format:
+[English reply]
+
+🇹🇭 [Same reply in Thai]
+
+Be concise, warm, and helpful.`;
   }
 
   try {
