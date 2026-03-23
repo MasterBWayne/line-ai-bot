@@ -5,10 +5,7 @@ const LINE_CONFIG = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN || '',
   channelSecret: process.env.LINE_CHANNEL_SECRET || '',
 };
-
-const client = new messagingApi.MessagingApiClient({
-  channelAccessToken: LINE_CONFIG.channelAccessToken,
-});
+const client = new messagingApi.MessagingApiClient({ channelAccessToken: LINE_CONFIG.channelAccessToken });
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const MODEL = 'gemini-2.5-flash-lite';
@@ -21,123 +18,53 @@ const THAI_RE = /[\u0E00-\u0E7F]/;
 const ENGLISH_RE = /^[a-zA-Z][a-zA-Z0-9\s.,!?'"()\-:;]{2,}$/;
 const TRIGGER_RE = /^@(?:ai|brucebot(?:\s+ai)?)\s*(.*)/is;
 
-// ─── Supabase: conversation memory ───────────────────────────────────────────
+// ─── Supabase helpers ────────────────────────────────────────────────────────
 
-async function saveMessage(chatId, userId, displayName, text, lang) {
-  if (!SUPABASE_URL || !SUPABASE_KEY) return;
-  try {
-    await fetch(`${SUPABASE_URL}/rest/v1/brucebot_messages`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_KEY,
-        'Authorization': `Bearer ${SUPABASE_KEY}`,
-        'Prefer': 'return=minimal',
-      },
-      body: JSON.stringify({ chat_id: chatId, user_id: userId, display_name: displayName, text, lang }),
-    });
-  } catch (e) {
-    console.error('Supabase save error:', e.message);
-  }
-}
-
-async function getRecentMessages(chatId, limit = 30) {
-  if (!SUPABASE_URL || !SUPABASE_KEY) return [];
-  try {
-    const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/brucebot_messages?chat_id=eq.${encodeURIComponent(chatId)}&order=created_at.desc&limit=${limit}`,
-      { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` } }
-    );
-    const rows = await res.json();
-    return Array.isArray(rows) ? rows.reverse() : [];
-  } catch (e) {
-    console.error('Supabase fetch error:', e.message);
-    return [];
-  }
-}
-
-async function getRelationshipProfile(chatId) {
+async function sb(path, method = 'GET', body = null) {
   if (!SUPABASE_URL || !SUPABASE_KEY) return null;
+  const opts = {
+    method,
+    headers: {
+      'apikey': SUPABASE_KEY,
+      'Authorization': `Bearer ${SUPABASE_KEY}`,
+      'Content-Type': 'application/json',
+      'Prefer': method === 'POST' ? 'resolution=merge-duplicates,return=minimal' : undefined,
+    },
+  };
+  if (body) opts.body = JSON.stringify(body);
   try {
-    const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/brucebot_profile?id=eq.${encodeURIComponent(chatId)}`,
-      { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` } }
-    );
-    const rows = await res.json();
-    return Array.isArray(rows) && rows.length > 0 ? rows[0].data : null;
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, opts);
+    if (res.status === 204 || res.status === 201) return true;
+    return await res.json();
   } catch (e) {
-    console.error('Profile fetch error:', e.message);
+    console.error('Supabase error:', e.message);
     return null;
   }
 }
 
-async function updateRelationshipProfile(chatId, newInsights) {
-  if (!SUPABASE_URL || !SUPABASE_KEY || !newInsights) return;
-  try {
-    // Upsert the profile
-    await fetch(`${SUPABASE_URL}/rest/v1/brucebot_profile`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_KEY,
-        'Authorization': `Bearer ${SUPABASE_KEY}`,
-        'Prefer': 'resolution=merge-duplicates',
-      },
-      body: JSON.stringify({ id: chatId, data: newInsights, updated_at: new Date().toISOString() }),
-    });
-  } catch (e) {
-    console.error('Profile update error:', e.message);
-  }
+async function saveMessage(chatId, userId, displayName, text, lang) {
+  return sb('brucebot_messages', 'POST', { chat_id: chatId, user_id: userId, display_name: displayName, text, lang });
 }
 
-async function saveBotReply(chatId, text) {
-  if (!SUPABASE_URL || !SUPABASE_KEY) return;
-  try {
-    await fetch(`${SUPABASE_URL}/rest/v1/brucebot_messages`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_KEY,
-        'Authorization': `Bearer ${SUPABASE_KEY}`,
-        'Prefer': 'return=minimal',
-      },
-      body: JSON.stringify({ chat_id: chatId, user_id: 'brucebot', display_name: 'BruceBot AI', text, lang: 'bot' }),
-    });
-  } catch (e) {
-    console.error('Supabase bot save error:', e.message);
-  }
+async function getRecentMessages(chatId, limit = 30) {
+  const rows = await sb(`brucebot_messages?chat_id=eq.${encodeURIComponent(chatId)}&order=created_at.desc&limit=${limit}`);
+  return Array.isArray(rows) ? rows.reverse() : [];
 }
 
-// ─── LINE: get sender display name ───────────────────────────────────────────
-
-async function getDisplayName(userId, chatId, chatType) {
-  try {
-    if (chatType === 'group') {
-      const member = await client.getGroupMemberProfile(chatId, userId);
-      return member.displayName || 'Member';
-    } else if (chatType === 'room') {
-      const member = await client.getRoomMemberProfile(chatId, userId);
-      return member.displayName || 'Member';
-    } else {
-      const profile = await client.getProfile(userId);
-      return profile.displayName || 'User';
-    }
-  } catch (e) {
-    console.error('getDisplayName error:', e.message);
-    return 'User';
-  }
+async function getProfile(chatId) {
+  const rows = await sb(`brucebot_profile?id=eq.${encodeURIComponent(chatId)}`);
+  return Array.isArray(rows) && rows.length > 0 ? rows[0].data : {};
 }
 
-// ─── Gemini call ─────────────────────────────────────────────────────────────
+async function saveProfile(chatId, data) {
+  return sb('brucebot_profile', 'POST', { id: chatId, data, updated_at: new Date().toISOString() });
+}
 
-async function callGemini(systemPrompt, userMessage, chatHistory = []) {
-  // Build contents array: history turns + current message
-  const contents = [];
-  for (const msg of chatHistory) {
-    contents.push({ role: msg.role, parts: [{ text: msg.text }] });
-  }
-  contents.push({ role: 'user', parts: [{ text: userMessage }] });
+// ─── Gemini helper ───────────────────────────────────────────────────────────
 
+async function callGemini(systemPrompt, messages) {
+  // messages = [{role: 'user'|'model', text: string}]
+  const contents = messages.map(m => ({ role: m.role, parts: [{ text: m.text }] }));
   const body = {
     system_instruction: { parts: [{ text: systemPrompt }] },
     contents,
@@ -148,21 +75,73 @@ async function callGemini(systemPrompt, userMessage, chatHistory = []) {
       { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
     ],
   };
-
-  const res = await fetch(GEMINI_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    const err = await res.text();
-    console.error('Gemini error:', res.status, err.slice(0, 200));
-    return null;
-  }
-
+  const res = await fetch(GEMINI_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!res.ok) { console.error('Gemini error:', res.status, (await res.text()).slice(0, 200)); return null; }
   const data = await res.json();
   return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
+}
+
+// ─── Profile updater — runs silently on every message ────────────────────────
+
+async function learnFromMessage(chatId, displayName, text, lang, currentProfile) {
+  const prompt = `You are silently observing a couple's LINE chat to build a relationship intelligence profile.
+A message was just sent. Extract any meaningful insights about the people or relationship.
+
+Current profile:
+${JSON.stringify(currentProfile, null, 2)}
+
+New message from ${displayName} (lang: ${lang}): "${text}"
+
+If this message reveals something worth remembering (personality trait, preference, feeling, milestone, pattern, topic they care about), output a JSON object with the new/updated fields to merge into the profile.
+
+Profile structure to use:
+{
+  "bruce": { "personality": [], "interests": [], "communication_style": "", "languages": ["English"], "notes": [] },
+  "k": { "personality": [], "interests": [], "communication_style": "", "languages": ["Thai"], "notes": [] },
+  "relationship": { "milestones": [], "patterns": [], "shared_interests": [], "recurring_topics": [], "dynamics": "", "started": "" },
+  "memories": []
+}
+
+Output ONLY valid JSON to merge, or output null if nothing meaningful to add. No explanation.`;
+
+  try {
+    const result = await callGemini(prompt, [{ role: 'user', text: `Message: "${text}"` }]);
+    if (!result || result === 'null') return;
+    const updates = JSON.parse(result.replace(/```json\n?|\n?```/g, '').trim());
+    if (updates && typeof updates === 'object') {
+      // Deep merge
+      const merged = deepMerge(currentProfile, updates);
+      await saveProfile(chatId, merged);
+    }
+  } catch (e) {
+    console.error('Learn error:', e.message);
+  }
+}
+
+function deepMerge(base, updates) {
+  const result = { ...base };
+  for (const key of Object.keys(updates)) {
+    if (Array.isArray(updates[key]) && Array.isArray(base[key])) {
+      // Merge arrays, deduplicate strings
+      const combined = [...base[key], ...updates[key]];
+      result[key] = [...new Set(combined.map(x => typeof x === 'string' ? x : JSON.stringify(x)))].map(x => { try { return JSON.parse(x); } catch { return x; } });
+    } else if (typeof updates[key] === 'object' && updates[key] !== null && typeof base[key] === 'object' && base[key] !== null) {
+      result[key] = deepMerge(base[key], updates[key]);
+    } else if (updates[key] !== null && updates[key] !== undefined && updates[key] !== '') {
+      result[key] = updates[key];
+    }
+  }
+  return result;
+}
+
+// ─── LINE display name ───────────────────────────────────────────────────────
+
+async function getDisplayName(userId, chatId, chatType) {
+  try {
+    if (chatType === 'group') return (await client.getGroupMemberProfile(chatId, userId)).displayName || 'Member';
+    if (chatType === 'room') return (await client.getRoomMemberProfile(chatId, userId)).displayName || 'Member';
+    return (await client.getProfile(userId)).displayName || 'User';
+  } catch (e) { return 'User'; }
 }
 
 // ─── Event handler ───────────────────────────────────────────────────────────
@@ -175,114 +154,88 @@ async function handleEvent(event) {
   const triggerMatch = text.match(TRIGGER_RE);
   const isEnglishOnly = ENGLISH_RE.test(text);
   const userId = event.source.userId;
-
-  // Determine chat context
-  const chatType = event.source.type; // 'user', 'group', 'room'
+  const chatType = event.source.type;
   const chatId = event.source.groupId || event.source.roomId || event.source.userId;
 
-  let userMessage, systemPrompt, lang;
+  let lang;
+  if (hasThai && !triggerMatch) lang = 'th';
+  else if (isEnglishOnly && !triggerMatch) lang = 'en';
+  else if (triggerMatch) lang = 'cmd';
+  else return null;
 
-  if (hasThai && !triggerMatch) {
-    userMessage = text;
-    lang = 'th';
-  } else if (isEnglishOnly && !triggerMatch) {
-    userMessage = text;
-    lang = 'en';
-  } else if (triggerMatch) {
-    userMessage = triggerMatch[1].trim() || 'hello';
-    lang = 'cmd';
-  } else {
-    return null;
-  }
-
-  // Get sender name + recent history + relationship profile in parallel
   const [displayName, history, profile] = await Promise.all([
     getDisplayName(userId, chatId, chatType),
     getRecentMessages(chatId, 30),
-    getRelationshipProfile(chatId),
+    getProfile(chatId),
   ]);
 
-  // Save this message
+  // Save message + silently learn from it (fire and forget)
   saveMessage(chatId, userId, displayName, text, lang);
+  learnFromMessage(chatId, displayName, text, lang, profile); // non-blocking
 
-  // Build context from history
-  let contextBlock = '';
-  if (history.length > 0) {
-    const historyLines = history.map(m => `${m.display_name}: ${m.text}`).join('\n');
-    contextBlock = `\n\nRecent conversation (last ${history.length} messages):\n${historyLines}`;
-  }
-
-  // Add long-term relationship profile if available
-  let profileBlock = '';
-  if (profile && Object.keys(profile).length > 0) {
-    profileBlock = `\n\nLong-term relationship profile:\n${JSON.stringify(profile, null, 2)}`;
-  }
-
-  // Build chat history for @ai assistant mode (proper turn-by-turn)
-  let chatHistory = [];
-  if (lang === 'cmd' && history.length > 0) {
+  // Build history turns for @ai
+  const chatHistory = [];
+  if (lang === 'cmd') {
     for (const msg of history) {
-      if (msg.lang === 'cmd') chatHistory.push({ role: 'user', text: msg.text });
+      if (msg.lang === 'cmd') chatHistory.push({ role: 'user', text: `${msg.display_name}: ${msg.text}` });
       else if (msg.lang === 'bot') chatHistory.push({ role: 'model', text: msg.text });
     }
   }
 
+  // Recent convo context for translations
+  const recentLines = history.slice(-10).map(m => `${m.display_name}: ${m.text}`).join('\n');
+
+  let systemPrompt, inputMessages;
+
   if (lang === 'th') {
-    systemPrompt = `Translate Thai to English. Translate every line, no skipping. Preserve tone. Translate slang accurately. Then add "Context: [1-2 sentences on emotional subtext]". Output only translation and context.${contextBlock}`;
+    systemPrompt = `You are a Thai-English translator. Translate every line faithfully. No skipping. Preserve tone and slang. Add "Context: [emotional subtext in 1-2 sentences]".`;
+    inputMessages = [{ role: 'user', text }];
   } else if (lang === 'en') {
-    systemPrompt = `Translate English to natural conversational Thai for texting. Output only the Thai translation.${contextBlock}`;
+    systemPrompt = `Translate English to natural conversational Thai for texting. Output only the Thai translation.`;
+    inputMessages = [{ role: 'user', text }];
   } else {
-    systemPrompt = `You are a personal relationship assistant in a LINE group chat for a couple: Bruce (English) and K (Thai).
+    // Build rich profile summary
+    const profileSummary = Object.keys(profile).length > 0
+      ? `\n\nWhat you know about them:\n${JSON.stringify(profile, null, 2)}`
+      : '';
 
-You have access to their conversation history and a long-term profile of their relationship.
-${profileBlock}
+    systemPrompt = `You are a personal relationship assistant living inside Bruce and K's LINE group chat.
 
-Your job:
-- Help them communicate, play games, understand each other, and grow together
-- Always reply in BOTH English and Thai so both can read it:
-  [English reply]
-  
-  🇹🇭 [Same reply in Thai]
-- Be warm, insightful, and fun
-- When you learn something meaningful about the couple (a preference, a milestone, a pattern), note it for the profile
+Bruce speaks English. K speaks Thai. You've been watching their conversations and learning about them over time.
+${profileSummary}
 
-After your reply, if you learned something new about them worth remembering, append on a new line:
-PROFILE_UPDATE:{"key": "value"}
+Your role:
+- Help them communicate, play, grow, understand each other
+- Give advice when asked, suggest date ideas, games, conversation starters, anything they need
+- Notice patterns in their relationship and gently reflect them back when relevant
+- Be warm, insightful, and fun — like a wise friend who knows them both well
 
-Keep profile updates concise and factual.`;
+Always reply in BOTH languages so both can read:
+[English reply]
+
+🇹🇭 [Exact same reply in Thai]`;
+
+    // Add history as proper turns
+    chatHistory.push({ role: 'user', text: `${displayName}: ${triggerMatch[1].trim() || 'hello'}` });
+    inputMessages = chatHistory;
   }
 
   try {
     const replyText = await Promise.race([
-      callGemini(systemPrompt, userMessage, chatHistory),
+      callGemini(systemPrompt, inputMessages),
       new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 22000)),
     ]);
 
     if (!replyText) return null;
 
-    // Add sender label for translations
     let finalReply = replyText;
     if (lang === 'th' || lang === 'en') {
       const flag = lang === 'th' ? '🇹🇭' : '🇺🇸';
       finalReply = `${flag} ${displayName}:\n${replyText}`;
     }
 
-    // Save bot reply + extract profile updates
     if (lang === 'cmd') {
-      // Check for profile update embedded in reply
-      const profileMatch = replyText.match(/PROFILE_UPDATE:(\{.*\})/s);
-      if (profileMatch) {
-        try {
-          const newInsights = JSON.parse(profileMatch[1]);
-          const existingProfile = profile || {};
-          updateRelationshipProfile(chatId, { ...existingProfile, ...newInsights });
-          // Strip the profile update from the visible reply
-          finalReply = finalReply.replace(/\nPROFILE_UPDATE:.*$/s, '').trim();
-        } catch (e) {
-          console.error('Profile parse error:', e.message);
-        }
-      }
-      saveBotReply(chatId, replyText.replace(/\nPROFILE_UPDATE:.*$/s, '').trim());
+      saveMessage(chatId, 'brucebot', 'BruceBot AI', replyText, 'bot');
     }
 
     return client.replyMessage({
@@ -290,32 +243,31 @@ Keep profile updates concise and factual.`;
       messages: [{ type: 'text', text: finalReply }],
     });
   } catch (err) {
-    console.error('handleEvent error:', err.message);
+    console.error('Error:', err.message);
     return client.replyMessage({
       replyToken: event.replyToken,
-      messages: [{ type: 'text', text: `⚠️ Error: ${err.message}` }],
+      messages: [{ type: 'text', text: `⚠️ ${err.message}` }],
     });
   }
 }
 
-// ─── Main handler ─────────────────────────────────────────────────────────────
+// ─── Main ────────────────────────────────────────────────────────────────────
 
 module.exports = async (req, res) => {
   if (req.method === 'GET') {
     if (req.url?.includes('test')) {
-      const raw = req.url.split('text=')[1] || '';
-      const text = decodeURIComponent(raw) || 'ที่ร้านอาหารญี่ปุ่น\nJimmy ยอมรับ';
+      const text = decodeURIComponent(req.url.split('text=')[1] || '') || 'ที่ร้านอาหารญี่ปุ่น\nJimmy ยอมรับ';
       try {
-        const reply = await callGemini(
-          'Translate Thai to English. Translate every line, no skipping. Preserve tone. Add Context line.',
-          text
-        );
+        const reply = await callGemini('Translate Thai to English. Every line. Preserve tone. Add Context line.', [{ role: 'user', text }]);
         return res.status(200).json({ input: text, output: reply });
-      } catch (e) {
-        return res.status(500).json({ error: e.message });
-      }
+      } catch (e) { return res.status(500).json({ error: e.message }); }
     }
-    return res.status(200).json({ status: 'ok', bot: 'BruceBot AI', model: MODEL, features: ['Thai↔EN auto-translate', 'sender label', 'conversation memory'] });
+    if (req.url?.includes('profile')) {
+      const chatId = decodeURIComponent(req.url.split('chatId=')[1] || '');
+      const profile = await getProfile(chatId);
+      return res.status(200).json({ chatId, profile });
+    }
+    return res.status(200).json({ status: 'ok', bot: 'BruceBot AI', model: MODEL, memory: '30 messages + relationship profile' });
   }
 
   if (req.method !== 'POST') return res.status(405).end();
