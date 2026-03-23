@@ -1,5 +1,4 @@
 const { messagingApi } = require('@line/bot-sdk');
-const { GoogleGenAI } = require('@google/genai');
 const crypto = require('crypto');
 
 const LINE_CONFIG = {
@@ -7,67 +6,60 @@ const LINE_CONFIG = {
   channelSecret: process.env.LINE_CHANNEL_SECRET || '',
 };
 
-const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 const client = new messagingApi.MessagingApiClient({
   channelAccessToken: LINE_CONFIG.channelAccessToken,
 });
 
-const MODEL = 'gemini-2.5-flash';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const MODEL = 'gemini-2.5-flash-preview-04-17';
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
 const THAI_TO_EN_PROMPT = `You are a professional Thai-English translation tool. Translate the given Thai text into English.
 
 Rules:
-- Translate every line. If input has 4 lines, output 4 translated lines.
+- Translate every single line. If the input has 6 lines, output exactly 6 translated lines.
 - Never skip, summarize, or combine lines.
-- Translate all slang, profanity, and colloquialisms directly and accurately.
-- Preserve the original emotional tone.
-- After the translation, add one line: "Context: [brief explanation of the subtext or cultural nuance]"
-- Output only the translation and context. No intro, no advice.`;
+- Translate all slang and colloquialisms accurately.
+- Preserve the original emotional tone exactly.
+- After the translation lines, add: "Context: [1-2 sentences explaining the emotional subtext or cultural nuance]"
+- Output only the translation and context. No intro, no commentary, no advice.`;
 
-const EN_TO_THAI_PROMPT = `You are a professional English-Thai translation tool. Translate the given English text into natural conversational Thai suitable for texting.
+const EN_TO_THAI_PROMPT = `You are a professional English-Thai translation tool. Translate the given English text into natural conversational Thai suitable for texting between a couple. Output only the Thai translation. No intro, no advice.`;
 
-Rules:
-- Translate every line accurately.
-- Use casual Thai appropriate for texting between a couple.
-- Output only the Thai translation. No intro, no advice.`;
+const ASSISTANT_PROMPT = `You are a helpful assistant in a LINE group chat. Reply concisely. Match the user's language (Thai → Thai, English → English).`;
 
-const ASSISTANT_PROMPT = `You are a helpful assistant in a LINE group chat. Reply concisely. Match the language of the user (Thai → Thai, English → English).`;
-
-// Detect Thai characters
 const THAI_RE = /[\u0E00-\u0E7F]/;
-// Detect English-only text (min 3 chars, starts with letter)
 const ENGLISH_RE = /^[a-zA-Z][a-zA-Z0-9\s.,!?'"()\-:;]{2,}$/;
-// Match @ai or @BruceBot trigger
 const TRIGGER_RE = /^@(?:ai|brucebot(?:\s+ai)?)\s*(.*)/is;
 
 async function callGemini(systemPrompt, userMessage) {
-  const response = await genai.models.generateContent({
-    model: MODEL,
+  const body = {
+    system_instruction: { parts: [{ text: systemPrompt }] },
     contents: [{ role: 'user', parts: [{ text: userMessage }] }],
-    config: {
-      systemInstruction: systemPrompt,
-      safetySettings: [
-        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-      ],
-    },
+    safetySettings: [
+      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+    ],
+  };
+
+  const res = await fetch(GEMINI_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
 
-  // Safely extract text — response.text can throw if blocked
-  let text = null;
-  try {
-    text = typeof response.text === 'function' ? response.text() : response.text;
-    text = text?.trim() || null;
-  } catch (e) {
-    console.error('response.text() threw:', e.message);
-    // Try extracting from candidates directly
-    text = response.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
+  if (!res.ok) {
+    const err = await res.text();
+    console.error('Gemini API error:', res.status, err.slice(0, 300));
+    return null;
   }
 
-  console.log('Gemini reply length:', text?.length ?? 'null');
-  return text;
+  const data = await res.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+  console.log('Gemini reply length:', text?.length ?? 'null', '| finish:', data.candidates?.[0]?.finishReason);
+  return text || null;
 }
 
 async function handleEvent(event) {
@@ -78,8 +70,7 @@ async function handleEvent(event) {
   const triggerMatch = text.match(TRIGGER_RE);
   const isEnglishOnly = ENGLISH_RE.test(text);
 
-  let userMessage;
-  let systemPrompt;
+  let userMessage, systemPrompt;
 
   if (hasThai && !triggerMatch) {
     userMessage = text;
@@ -97,17 +88,15 @@ async function handleEvent(event) {
   try {
     const replyText = await Promise.race([
       callGemini(systemPrompt, userMessage),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout after 20s')), 20000)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 20000)),
     ]);
-
-    const finalReply = replyText || '⚠️ Could not translate. Try again.';
 
     return client.replyMessage({
       replyToken: event.replyToken,
-      messages: [{ type: 'text', text: finalReply }],
+      messages: [{ type: 'text', text: replyText || '⚠️ Could not translate. Try again.' }],
     });
   } catch (err) {
-    console.error('Error:', err.message);
+    console.error('handleEvent error:', err.message);
     return client.replyMessage({
       replyToken: event.replyToken,
       messages: [{ type: 'text', text: `⚠️ Error: ${err.message}` }],
@@ -118,7 +107,8 @@ async function handleEvent(event) {
 module.exports = async (req, res) => {
   if (req.method === 'GET') {
     if (req.url?.includes('test')) {
-      const text = decodeURIComponent(req.url.split('text=')[1] || '') || 'ที่ร้านอาหารญี่ปุ่น\nJimmy ยอมรับ';
+      const raw = req.url.split('text=')[1] || '';
+      const text = decodeURIComponent(raw) || 'ที่ร้านอาหารญี่ปุ่น\nJimmy ยอมรับ';
       try {
         const reply = await callGemini(THAI_TO_EN_PROMPT, text);
         return res.status(200).json({ input: text, output: reply });
