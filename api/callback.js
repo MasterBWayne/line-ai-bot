@@ -122,13 +122,25 @@ module.exports = async (req, res) => {
   if (req.method !== 'POST') return res.status(405).end();
 
   const events = req.body?.events || [];
+
+  // Log every webhook call — shows us what LINE is actually sending
+  console.log(`Webhook: ${events.length} event(s)`);
+  events.forEach((e, i) => {
+    const text = e.message?.text || '';
+    const hasThai = THAI_RE.test(text);
+    console.log(`Event[${i}]: type=${e.type} msgType=${e.message?.type} hasThai=${hasThai} text="${text.slice(0, 80)}"`);
+  });
+
   if (events.length === 0) return res.status(200).json({ status: 'ok' });
 
   const signature = req.headers['x-line-signature'];
   if (signature && LINE_CONFIG.channelSecret) {
     const body = JSON.stringify(req.body);
     const hash = crypto.createHmac('sha256', LINE_CONFIG.channelSecret).update(body).digest('base64');
-    if (hash !== signature) return res.status(401).json({ error: 'Invalid signature' });
+    if (hash !== signature) {
+      console.error('Signature mismatch — rejecting');
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
   }
 
   try {
