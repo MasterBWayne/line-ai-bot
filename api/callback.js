@@ -307,12 +307,7 @@ Write your full response in English first. Then write the exact same response in
 
   try {
     if (lang === 'cmd') {
-      // For @ai: reply token acknowledged silently, push real answer when ready
-      // Use reply token immediately to avoid expiry, then push the actual response
-      client.replyMessage({
-        replyToken: event.replyToken,
-        messages: [{ type: 'text', text: '👍' }],
-      }).catch(() => {}); // silent — just consuming the token
+      // For @ai: just push the response directly — no reply needed
 
       // Generate and push real response with no time pressure
       try {
