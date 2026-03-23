@@ -47,10 +47,10 @@ Do not give advice. Just translate.`;
 
 const ASSISTANT_PROMPT = `You are a helpful assistant in a LINE group chat. Reply concisely. If Thai, reply in Thai. If English, reply in English.`;
 
-// Detect Thai characters
+// Detect Thai characters (Unicode block U+0E00–U+0E7F)
 const THAI_RE = /[\u0E00-\u0E7F]/;
-// Detect mostly-English text (letters, basic punctuation, no Thai)
-const ENGLISH_RE = /^[a-zA-Z0-9\s.,!?'"()\-:;]+$/;
+// Detect mostly-English text (letters, basic punctuation, no Thai) — min 3 chars
+const ENGLISH_RE = /^[a-zA-Z][a-zA-Z0-9\s.,!?'"()\-:;]{2,}$/;
 // Match @ai or @BruceBot trigger
 const TRIGGER_RE = /^@(?:ai|brucebot(?:\s+ai)?)\s*(.*)/is;
 
@@ -92,18 +92,29 @@ async function handleEvent(event) {
   }
 
   try {
-    const reply = await callGemini(systemPrompt, userMessage);
-    if (!reply) return null;
+    // Race against LINE's 30s reply token expiry
+    const reply = await Promise.race([
+      callGemini(systemPrompt, userMessage),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 20000)),
+    ]);
+
+    if (!reply) {
+      console.error('Empty reply from Gemini for input:', userMessage.slice(0, 100));
+      return client.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{ type: 'text', text: '⚠️ Got empty response. Try again!' }],
+      });
+    }
 
     return client.replyMessage({
       replyToken: event.replyToken,
       messages: [{ type: 'text', text: reply }],
     });
   } catch (err) {
-    console.error('Gemini error:', err.message);
+    console.error('Error:', err.message, '| input:', userMessage.slice(0, 100));
     return client.replyMessage({
       replyToken: event.replyToken,
-      messages: [{ type: 'text', text: '⚠️ Translation error. Try again!' }],
+      messages: [{ type: 'text', text: `⚠️ Error: ${err.message}. Try again!` }],
     });
   }
 }
@@ -131,7 +142,10 @@ module.exports = async (req, res) => {
   }
 
   try {
-    await Promise.all(events.map(handleEvent));
+    // Process events sequentially — parallel risks reply token conflicts
+    for (const event of events) {
+      await handleEvent(event);
+    }
     res.status(200).json({ status: 'ok' });
   } catch (err) {
     console.error('Error:', err);
