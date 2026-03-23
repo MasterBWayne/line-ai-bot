@@ -1,7 +1,7 @@
 /**
  * BruceBot AI — Proactive Engagement Cron
- * Runs every hour via Vercel cron
- * Handles: silence breaker (12h), conversation catalyst, weekly memory surfacing
+ * Runs every hour via Vercel cron or external cron trigger
+ * Handles: silence breaker (12h), conversation catalyst, daily check-in, weekly memory, weekly report
  */
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
@@ -21,6 +21,7 @@ async function sb(path, method = 'GET', body = null) {
       'apikey': SUPABASE_KEY,
       'Authorization': `Bearer ${SUPABASE_KEY}`,
       'Content-Type': 'application/json',
+      'Prefer': method === 'POST' ? 'resolution=merge-duplicates,return=minimal' : undefined,
     },
   };
   if (body) opts.body = JSON.stringify(body);
@@ -47,8 +48,12 @@ async function getRecentMessages(chatId, limit = 20) {
   return Array.isArray(rows) ? rows.reverse() : [];
 }
 
+async function getMessagesAfter(chatId, afterDate) {
+  const rows = await sb(`brucebot_messages?chat_id=eq.${encodeURIComponent(chatId)}&created_at=gte.${afterDate}&order=created_at.asc&limit=500`);
+  return Array.isArray(rows) ? rows : [];
+}
+
 async function getAllChatIds() {
-  // Get distinct chat IDs that have had activity
   const rows = await sb('brucebot_messages?select=chat_id&order=created_at.desc&limit=1000');
   if (!Array.isArray(rows)) return [];
   const seen = new Set();
@@ -60,7 +65,6 @@ async function getAllChatIds() {
 }
 
 async function pushMessage(chatId, text) {
-  // LINE push message API — works for groups and 1:1
   const res = await fetch('https://api.line.me/v2/bot/message/push', {
     method: 'POST',
     headers: {
@@ -69,7 +73,7 @@ async function pushMessage(chatId, text) {
     },
     body: JSON.stringify({
       to: chatId,
-      messages: [{ type: 'text', text }],
+      messages: [{ type: 'text', text: text.slice(0, 4999) }],
     }),
   });
   const result = await res.json();
@@ -94,6 +98,16 @@ async function callGemini(systemPrompt, userText) {
   return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
 }
 
+async function saveBotMessage(chatId, text) {
+  await sb('brucebot_messages', 'POST', {
+    chat_id: chatId,
+    user_id: 'brucebot',
+    display_name: 'BruceBot AI',
+    text,
+    lang: 'bot',
+  });
+}
+
 // ─── Feature 1: Silence Breaker (12h) ────────────────────────────────────────
 
 async function checkSilenceBreaker(chatId, messages, profile) {
@@ -103,13 +117,9 @@ async function checkSilenceBreaker(chatId, messages, profile) {
   const lastTime = new Date(lastMsg.created_at);
   const hoursSince = (Date.now() - lastTime.getTime()) / (1000 * 60 * 60);
 
-  // Only trigger between 12-13 hours of silence (so we don't spam every hour)
   if (hoursSince < 12 || hoursSince > 13) return;
-
-  // Don't trigger if last message was from the bot
   if (lastMsg.user_id === 'brucebot') return;
 
-  // Check if we already sent a silence breaker in the last 12h
   const lastBotMsg = messages.filter(m => m.user_id === 'brucebot').pop();
   if (lastBotMsg) {
     const botHoursAgo = (Date.now() - new Date(lastBotMsg.created_at).getTime()) / (1000 * 60 * 60);
@@ -147,15 +157,7 @@ Do NOT say "I notice you haven't talked" or anything that sounds robotic.`;
 
   console.log(`Silence breaker for ${chatId}: ${hoursSince.toFixed(1)}h since last message`);
   await pushMessage(chatId, reply);
-
-  // Save bot message to history
-  await sb('brucebot_messages', 'POST', {
-    chat_id: chatId,
-    user_id: 'brucebot',
-    display_name: 'BruceBot AI',
-    text: reply,
-    lang: 'bot',
-  });
+  await saveBotMessage(chatId, reply);
 }
 
 // ─── Feature 2: Conversation Catalyst ────────────────────────────────────────
@@ -163,22 +165,18 @@ Do NOT say "I notice you haven't talked" or anything that sounds robotic.`;
 async function checkConversationCatalyst(chatId, messages, profile) {
   if (messages.length < 6) return;
 
-  // Look at last 6 non-bot messages
   const recent = messages.filter(m => m.user_id !== 'brucebot').slice(-6);
   if (recent.length < 6) return;
 
-  // Check if last bot message was recent (don't double-suggest)
   const lastBotMsg = messages.filter(m => m.user_id === 'brucebot').pop();
   if (lastBotMsg) {
     const botMinAgo = (Date.now() - new Date(lastBotMsg.created_at).getTime()) / (1000 * 60);
-    if (botMinAgo < 60) return; // Don't suggest within 1h of last bot message
+    if (botMinAgo < 60) return;
   }
 
-  // Detect low engagement: all recent messages are very short (≤3 words)
   const shortMessages = recent.filter(m => m.text.split(/\s+/).length <= 3 && !m.text.startsWith('@'));
-  if (shortMessages.length < 5) return; // Not enough short messages
+  if (shortMessages.length < 5) return;
 
-  // Check last message is recent (within 30 min) — conversation is active but flat
   const lastTime = new Date(recent[recent.length - 1].created_at);
   const minSince = (Date.now() - lastTime.getTime()) / (1000 * 60);
   if (minSince > 30) return;
@@ -212,14 +210,7 @@ Format:
 
   console.log(`Conversation catalyst for ${chatId}: ${shortMessages.length}/6 short messages`);
   await pushMessage(chatId, reply);
-
-  await sb('brucebot_messages', 'POST', {
-    chat_id: chatId,
-    user_id: 'brucebot',
-    display_name: 'BruceBot AI',
-    text: reply,
-    lang: 'bot',
-  });
+  await saveBotMessage(chatId, reply);
 }
 
 // ─── Feature 3: Weekly Memory Surfacing (Sundays) ────────────────────────────
@@ -227,15 +218,16 @@ Format:
 async function checkWeeklyMemory(chatId, messages, profile) {
   const now = new Date();
   const isSunday = now.getUTCDay() === 0;
-  const isNoonHour = now.getUTCHours() === 5; // 5 UTC = noon Bangkok time
+  const utcHour = now.getUTCHours();
+  // noon Bangkok = 5 UTC
+  const isNoonHour = utcHour === 5;
 
   if (!isSunday || !isNoonHour) return;
 
-  // Check if we already sent a weekly memory this Sunday
   const lastBotMsg = messages.filter(m => m.user_id === 'brucebot').pop();
   if (lastBotMsg) {
     const botHoursAgo = (Date.now() - new Date(lastBotMsg.created_at).getTime()) / (1000 * 60 * 60);
-    if (botHoursAgo < 20) return; // Already sent today
+    if (botHoursAgo < 20) return;
   }
 
   if (!profile || Object.keys(profile).length === 0) return;
@@ -267,20 +259,140 @@ Format:
 
   console.log(`Weekly memory for ${chatId}`);
   await pushMessage(chatId, reply);
+  await saveBotMessage(chatId, reply);
+}
 
-  await sb('brucebot_messages', 'POST', {
-    chat_id: chatId,
-    user_id: 'brucebot',
-    display_name: 'BruceBot AI',
-    text: reply,
-    lang: 'bot',
-  });
+// ─── Feature 5: Daily Check-in (8pm Bangkok = 13:00 UTC) ────────────────────
+
+async function checkDailyCheckin(chatId, messages, profile) {
+  const now = new Date();
+  const utcHour = now.getUTCHours();
+
+  // 8pm Bangkok = 13 UTC
+  if (utcHour !== 13) return;
+
+  // Must have at least one non-bot message today
+  const todayStart = new Date();
+  todayStart.setUTCHours(0, 0, 0, 0);
+  const todayMessages = messages.filter(m => m.user_id !== 'brucebot' && new Date(m.created_at) >= todayStart);
+  if (todayMessages.length === 0) return;
+
+  // Check last_checkin in profile to avoid repeating
+  const today = now.toISOString().split('T')[0];
+  if (profile.last_checkin === today) return;
+
+  const profileSummary = JSON.stringify(profile, null, 2);
+  const recentContext = messages.slice(-10).map(m => `${m.display_name}: ${m.text}`).join('\n');
+
+  const prompt = `You are BruceBot AI — a warm, bilingual relationship assistant for Bruce and K.
+
+It's 8pm — time for an evening check-in. Based on what you know about them and today's conversation, ask ONE meaningful relationship question.
+
+What you know:
+${profileSummary}
+
+Today's conversation:
+${recentContext}
+
+Rules:
+- Ask something that deepens their connection — not surface-level
+- Could be about today specifically, or something from their profile you want to explore
+- Make it feel organic, not like a therapy exercise
+- Keep it short (2-3 lines max)
+- Write in English first, then Thai
+
+Format:
+🌙 [English question]
+
+🇹🇭 [Same in Thai]
+
+Do NOT repeat questions you've asked before. Be creative and personal.`;
+
+  const reply = await callGemini(prompt, 'Generate daily check-in question');
+  if (!reply) return;
+
+  console.log(`Daily check-in for ${chatId}`);
+  await pushMessage(chatId, reply);
+  await saveBotMessage(chatId, reply);
+
+  // Update profile with last_checkin date
+  profile.last_checkin = today;
+  await saveProfile(chatId, profile);
+}
+
+// ─── Feature 9: Weekly Relationship Report (Sunday noon Bangkok) ─────────────
+
+async function checkWeeklyReport(chatId, messages, profile) {
+  const now = new Date();
+  const isSunday = now.getUTCDay() === 0;
+  const utcHour = now.getUTCHours();
+  // noon Bangkok = 5 UTC — but weekly memory already runs at 5. Run report at 6 UTC (1pm Bangkok).
+  if (!isSunday || utcHour !== 6) return;
+
+  // Check we haven't sent a report this week
+  const lastReport = profile.last_weekly_report;
+  const today = now.toISOString().split('T')[0];
+  if (lastReport === today) return;
+
+  // Get this week's messages (last 7 days)
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const weekMessages = await getMessagesAfter(chatId, weekAgo);
+
+  if (weekMessages.length === 0) return;
+
+  const nonBotMessages = weekMessages.filter(m => m.user_id !== 'brucebot');
+  const messageCount = nonBotMessages.length;
+
+  const profileSummary = JSON.stringify(profile, null, 2);
+  const conversationSample = nonBotMessages.slice(-30).map(m => `${m.display_name}: ${m.text}`).join('\n');
+
+  const weekStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const weekEnd = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+  const prompt = `You are BruceBot AI generating a weekly relationship report for Bruce and K.
+
+Total messages this week: ${messageCount}
+
+What you know about them:
+${profileSummary}
+
+Sample of this week's conversation (last 30 messages):
+${conversationSample}
+
+Generate a weekly report in this EXACT format:
+
+📊 Weekly Relationship Report
+Week of ${weekStart} – ${weekEnd}
+
+💬 Conversations: ${messageCount} messages this week
+📖 Topics: [list 3-4 main topics they discussed this week]
+🌟 Highlight: [the best moment or sweetest message this week — quote if possible]
+💡 Insight: [one thing they learned about each other this week, or one pattern you noticed]
+❤️ Relationship pulse: [one of: warm / growing / playful / deepening / needs attention — pick honestly]
+
+Keep going! 🌸
+
+---
+
+🇹🇭 [Same report in Thai below]
+
+Be specific. Use actual topics and moments from the conversation. Don't be generic.`;
+
+  const reply = await callGemini(prompt, 'Generate weekly relationship report');
+  if (!reply) return;
+
+  console.log(`Weekly report for ${chatId}: ${messageCount} messages`);
+  await pushMessage(chatId, reply);
+  await saveBotMessage(chatId, reply);
+
+  // Mark report as sent
+  profile.last_weekly_report = today;
+  await saveProfile(chatId, profile);
 }
 
 // ─── Main cron handler ────────────────────────────────────────────────────────
 
 module.exports = async (req, res) => {
-  // Verify cron secret to prevent abuse
   const authHeader = req.headers.authorization;
   if (authHeader !== `Bearer ${process.env.CRON_SECRET || 'brucebot-cron'}`) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -302,6 +414,8 @@ module.exports = async (req, res) => {
         await checkSilenceBreaker(chatId, messages, profile);
         await checkConversationCatalyst(chatId, messages, profile);
         await checkWeeklyMemory(chatId, messages, profile);
+        await checkDailyCheckin(chatId, messages, profile);
+        await checkWeeklyReport(chatId, messages, profile);
       } catch (e) {
         console.error(`Error processing ${chatId}:`, e.message);
       }
