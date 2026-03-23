@@ -26,7 +26,7 @@ const TRIGGER_RE = /^@(?:ai|brucebot(?:\s+ai)?)\s*(.*)/is;
 async function saveMessage(chatId, userId, displayName, text, lang) {
   if (!SUPABASE_URL || !SUPABASE_KEY) return;
   try {
-    await fetch(`${SUPABASE_URL}/rest/v1/messages`, {
+    await fetch(`${SUPABASE_URL}/rest/v1/brucebot_messages`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -45,7 +45,7 @@ async function getRecentMessages(chatId, limit = 10) {
   if (!SUPABASE_URL || !SUPABASE_KEY) return [];
   try {
     const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/messages?chat_id=eq.${encodeURIComponent(chatId)}&order=created_at.desc&limit=${limit}`,
+      `${SUPABASE_URL}/rest/v1/brucebot_messages?chat_id=eq.${encodeURIComponent(chatId)}&order=created_at.desc&limit=${limit}`,
       { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` } }
     );
     const rows = await res.json();
@@ -59,7 +59,7 @@ async function getRecentMessages(chatId, limit = 10) {
 async function saveBotReply(chatId, text) {
   if (!SUPABASE_URL || !SUPABASE_KEY) return;
   try {
-    await fetch(`${SUPABASE_URL}/rest/v1/messages`, {
+    await fetch(`${SUPABASE_URL}/rest/v1/brucebot_messages`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
