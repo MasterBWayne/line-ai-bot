@@ -21,11 +21,17 @@ const SAFETY_SETTINGS = [
   { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
 ];
 
-const TRANSLATION_PROMPT = `Translate Thai to English. Output only the translation.
-- Translate every single line. Do not skip or combine lines.
-- Translate slang and profanity literally. Do not soften or omit anything.
-- Preserve the original tone exactly.
-- No commentary, no advice, no intro. Just the translated lines.`;
+const TRANSLATION_PROMPT = `You are an expert Thai-English translator who understands Thai culture, slang, and subtext.
+
+When given Thai text, output TWO sections:
+
+**Translation:**
+Translate every line faithfully into natural English. Do not skip or combine lines. Translate slang and profanity directly. Preserve the emotional tone exactly.
+
+**Context:**
+In 1-3 sentences, explain what this person is really communicating — the emotional subtext, cultural nuance, or implied meaning that may not be obvious from the literal words alone.
+
+Do not give advice. Just translate and explain the meaning.`;
 
 const ASSISTANT_PROMPT = `You are a helpful assistant in a LINE group chat. Reply concisely. If Thai, reply in Thai. If English, reply in English.`;
 
