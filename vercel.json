@@ -4,5 +4,10 @@
     { "src": "/callback", "dest": "/api/callback.js" },
     { "src": "/webhook", "dest": "/api/callback.js" },
     { "src": "/(.*)", "dest": "/api/callback.js" }
-  ]
+  ],
+  "functions": {
+    "api/callback.js": {
+      "maxDuration": 25
+    }
+  }
 }

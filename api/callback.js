@@ -14,15 +14,7 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const MODEL = 'gemini-2.5-flash-lite';
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
-const THAI_TO_EN_PROMPT = `You are a professional Thai-English translation tool. Translate the given Thai text into English.
-
-Rules:
-- Translate every single line. If the input has 6 lines, output exactly 6 translated lines.
-- Never skip, summarize, or combine lines.
-- Translate all slang and colloquialisms accurately.
-- Preserve the original emotional tone exactly.
-- After the translation lines, add: "Context: [1-2 sentences explaining the emotional subtext or cultural nuance]"
-- Output only the translation and context. No intro, no commentary, no advice.`;
+const THAI_TO_EN_PROMPT = `Translate Thai to English. Rules: translate every line (no skipping), preserve tone, translate slang accurately. Then add "Context: [1-2 sentences on emotional subtext]". Output only translation + context.`;
 
 const EN_TO_THAI_PROMPT = `You are a professional English-Thai translation tool. Translate the given English text into natural conversational Thai suitable for texting between a couple. Output only the Thai translation. No intro, no advice.`;
 
