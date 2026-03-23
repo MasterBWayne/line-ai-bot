@@ -55,9 +55,19 @@ async function callGemini(systemPrompt, userMessage) {
     },
   });
 
-  const text = response.text?.trim();
-  console.log('Gemini reply length:', text?.length ?? 'null', '| model:', MODEL);
-  return text || null;
+  // Safely extract text — response.text can throw if blocked
+  let text = null;
+  try {
+    text = typeof response.text === 'function' ? response.text() : response.text;
+    text = text?.trim() || null;
+  } catch (e) {
+    console.error('response.text() threw:', e.message);
+    // Try extracting from candidates directly
+    text = response.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
+  }
+
+  console.log('Gemini reply length:', text?.length ?? 'null');
+  return text;
 }
 
 async function handleEvent(event) {
