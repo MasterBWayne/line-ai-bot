@@ -12,7 +12,7 @@ const client = new messagingApi.MessagingApiClient({
   channelAccessToken: LINE_CONFIG.channelAccessToken,
 });
 
-const MODEL = 'gemini-2.0-flash-lite';
+const MODEL = 'gemini-2.0-flash';
 
 const SAFETY_SETTINGS = [
   { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_NONE },
