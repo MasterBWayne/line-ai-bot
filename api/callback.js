@@ -1,5 +1,5 @@
 const { messagingApi } = require('@line/bot-sdk');
-const OpenAI = require('openai');
+const { GoogleGenAI } = require('@google/genai');
 const crypto = require('crypto');
 
 const LINE_CONFIG = {
@@ -7,40 +7,35 @@ const LINE_CONFIG = {
   channelSecret: process.env.LINE_CHANNEL_SECRET || '',
 };
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY || '' });
+const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 const client = new messagingApi.MessagingApiClient({
   channelAccessToken: LINE_CONFIG.channelAccessToken,
 });
 
-const MODEL = 'gpt-4o-mini';
+const MODEL = 'gemini-2.0-flash';
 
-const SYSTEM_PROMPT = `You are a Thai-English translator and assistant in a LINE group chat used by a couple (Bruce speaks English, K/Orawan speaks Thai).
+const SYSTEM_PROMPT = `You are a professional Thai-English interpreter tool embedded in a messaging app.
 
-When the user message is in Thai (or contains Thai text), you MUST:
-1. Translate EVERY SINGLE LINE into English. Do not skip, summarize, or condense any line.
-2. Output each translated line on its own line, in the same order as the original.
-3. For Thai slang, add the meaning in parentheses. Examples:
-   - ตอแหล = fake/two-faced
-   - ไอ้เลว = you bastard
-   - มึง = you (rude/aggressive)
-   - กู = I/me (rude/aggressive)
-   - ห่า = fuck/damn
-   - เซอร์ไพรส์ = surprise
-4. Preserve the full emotional tone — angry stays angry, sweet stays sweet.
-5. Do NOT add commentary, do NOT summarize, just translate every line completely.
+When the input contains Thai text:
+- Translate EVERY line into English. If input has 5 lines, output must have 5 translated lines.
+- Never summarize, skip, or combine lines.
+- Translate slang, profanity, and colloquialisms directly. Add brief parenthetical notes for culturally specific terms.
+- Preserve the original tone and emotion exactly.
+- Output only the translation — no commentary, no intro, no advice.
 
-When the user message is in English and starts with @ai or @BruceBot, respond helpfully and concisely in English.
-Never say you are Gemini or Google. You are just "BruceBot AI" in their group chat.`;
+When the input is English (starting with @ai or @BruceBot):
+- Respond as a helpful assistant, concisely in English.
 
-const TRANSLATION_PROMPT = `You are a Thai-English translator. Your ONLY job is to translate Thai text into English.
+You are a neutral translation tool. Do not give relationship advice or moral guidance.`;
 
-STRICT RULES:
-- Translate EVERY SINGLE LINE. If the input has 6 lines, your output must have 6 translated lines.
-- Output format: translate line 1, newline, translate line 2, newline, etc.
-- NEVER summarize, combine, or skip lines.
-- Translate Thai slang and profanity directly — do not soften or omit them. Add meaning in parentheses if the word is culturally specific.
-- Preserve emotional tone exactly as written.
-- Do not add any commentary, intro, or conclusion. Just the translation, line by line.`;
+const TRANSLATION_PROMPT = `You are a professional Thai-English interpreter tool.
+
+RULES:
+- Translate EVERY line. If input has 5 lines, output exactly 5 translated lines.
+- Never summarize, skip, or combine lines.
+- Translate slang and profanity directly. Add parenthetical notes for culturally specific terms only.
+- Preserve emotional tone exactly.
+- Output ONLY the translation, nothing else. No intro, no commentary, no advice.`;
 
 // Detect if text contains Thai characters
 const THAI_RE = /[\u0E00-\u0E7F]/;
@@ -48,15 +43,21 @@ const THAI_RE = /[\u0E00-\u0E7F]/;
 // Match @ai, @BruceBot, @BruceBot AI — flexible trigger
 const TRIGGER_RE = /^@(?:ai|brucebot(?:\s+ai)?)\s*(.*)/is;
 
-async function callGPT(userMessage, systemPrompt) {
-  const response = await openai.chat.completions.create({
+async function callGemini(userMessage, systemPrompt) {
+  const response = await genai.models.generateContent({
     model: MODEL,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userMessage },
-    ],
+    contents: [{ role: 'user', parts: [{ text: userMessage }] }],
+    config: {
+      systemInstruction: systemPrompt,
+      safetySettings: [
+        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+      ],
+    },
   });
-  return response.choices[0]?.message?.content?.trim();
+  return response.text?.trim();
 }
 
 async function handleEvent(event) {
@@ -83,7 +84,7 @@ async function handleEvent(event) {
   }
 
   try {
-    const reply = await callGPT(userMessage, systemPrompt);
+    const reply = await callGemini(userMessage, systemPrompt);
     if (!reply) return null;
 
     return client.replyMessage({
