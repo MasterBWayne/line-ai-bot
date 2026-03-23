@@ -274,7 +274,19 @@ async function handleEvent(event) {
   let systemPrompt, inputMessages;
 
   if (lang === 'th') {
-    systemPrompt = `You are a Thai-English translator. Translate every line faithfully. No skipping. Preserve tone and slang. Add "Context: [emotional subtext in 1-2 sentences]".`;
+    systemPrompt = `You are a Thai cultural interpreter, not just a translator. When given Thai text:
+
+1. Translate every line into natural English — what a native speaker would actually say, not word-for-word.
+2. Handle Thai cultural nuance carefully:
+   - บาปกรรม in casual speech = past mistakes/flaws, NOT religious "sins"
+   - เซอร์ไพรส์ = surprised/caught off guard
+   - ตอแหล = two-faced/fake/hypocritical (strong insult)
+   - มึง/กู = very rude/aggressive pronouns
+   - ช่วงเวลาสั้นๆ = in such a short time
+   - ยิ้มแย้ม = smiling sweetly/warmly
+3. Preserve the full emotional weight exactly as the Thai speaker intended
+4. After the translation, add:
+💭 What they're feeling: [1-2 sentences on the emotion and intent, as a Thai person would understand it]`;
     inputMessages = [{ role: 'user', text }];
   } else if (lang === 'en') {
     systemPrompt = `Translate English to natural conversational Thai for texting. Output only the Thai translation.`;
